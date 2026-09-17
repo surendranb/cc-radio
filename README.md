@@ -62,6 +62,20 @@ signal stays honest. `ccradio working` shows which tabs are busy right now.
 A tab that dies without reporting in is forgotten after 2 hours, so a crash can
 never wedge the music on forever.
 
+## Subagents
+
+Subagents run under their own `session_id` and never submit a prompt of their
+own, so they never start or stop the music. The tab that spawned them is still
+the thing being tracked.
+
+They do emit their own idle notifications. Those are ignored — cc-radio only
+ducks for a session it knows is working, so a subagent finishing can't dip your
+music at random.
+
+Background task completions arrive in the parent tab as a normal prompt, so a
+long chain of agent work keeps the music going rather than cutting out between
+steps.
+
 ## Controls (optional)
 
 You never need these — the hooks do everything. They exist for when you want them:

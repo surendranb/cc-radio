@@ -289,10 +289,39 @@ class TestWorkingSignal(Base):
 
 
 class TestDuckSignal(Base):
+    def _as(self, sid, fn):
+        import io
+        real, sys.stdin = sys.stdin, io.StringIO('{"session_id":"%s"}' % sid)
+        try:
+            sys.stdin.isatty = lambda: False
+            fn([])
+        finally:
+            sys.stdin = real
+
+    def _tab_is_working(self, sid="tab-A"):
+        self.cc.write_working({sid: time.time()})
+
+    def test_subagent_notification_does_not_duck(self):
+        """A subagent going idle must not dip a real tab's music."""
+        m = self.start_mpv(volume=80.0)
+        s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
+        self._tab_is_working("tab-A")
+        self._as("some-subagent-session", self.cc.cmd_duck)
+        self.assertEqual(m.props["volume"], 80, "subagent idle must not duck")
+        self.assertFalse(self.cc.load_state()["ducked"])
+
+    def test_real_tab_notification_still_ducks(self):
+        m = self.start_mpv(volume=80.0)
+        s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
+        self.assertEqual(m.props["volume"], 20)
+
     def test_duck_and_restore(self):
         m = self.start_mpv(volume=80.0)
         s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
-        self.cc.cmd_duck([])
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
         self.assertEqual(m.props["volume"], 20)
         self.cc.cmd_unduck([])
         self.assertEqual(m.props["volume"], 80)
@@ -300,17 +329,22 @@ class TestDuckSignal(Base):
     def test_duck_respects_floor(self):
         m = self.start_mpv(volume=8.0)
         s = self.cc.load_state(); s["volume"] = 8; self.cc.save_state(s)
-        self.cc.cmd_duck([])
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
         self.assertEqual(m.props["volume"], self.cc.DUCK_FLOOR)
 
     def test_double_duck_does_not_stack(self):
         m = self.start_mpv(volume=80.0)
         s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
-        self.cc.cmd_duck([]); self.cc.cmd_duck([]); self.cc.cmd_unduck([])
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
+        self._as("tab-A", self.cc.cmd_duck)
+        self.cc.cmd_unduck([])
         self.assertEqual(m.props["volume"], 80)
 
     def test_duck_without_daemon_is_harmless(self):
-        self.cc.cmd_duck([])
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
         self.assertFalse(self.cc.load_state()["ducked"])
 
 

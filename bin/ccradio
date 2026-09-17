@@ -704,7 +704,14 @@ def cmd_working(_):
 
 
 def cmd_duck(_):
-    """Notification / PermissionRequest: Claude needs you. Drop out of the way."""
+    """Notification / PermissionRequest: Claude needs you. Drop out of the way.
+
+    Only for a real tab. Subagents fire their own idle Notifications under a
+    separate session_id, and a subagent going idle is not you being asked for
+    anything - ducking on those would dip the music at random.
+    """
+    if session_id() not in read_working():
+        return
     s = load_state()
     if s.get("ducked") or not alive():
         return
