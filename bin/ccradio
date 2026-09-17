@@ -599,40 +599,79 @@ def is_playing():
 
 
 # --------------------------------------------------------------------------
-# the working signal: music plays while Claude is working, and only then
+# the working signal: music plays while ANY tab is working, and only then
 # --------------------------------------------------------------------------
 
-TURN_FILE = "turn"          # holds the id of the turn currently in flight
-START_DELAY = 6.0           # seconds of work before the music earns its place
+START_DELAY = 6.0        # seconds of work before the music earns its place
+STALE_AFTER = 7200.0     # forget a tab that never reported finishing (2h)
 
 
-def turn_path():
-    return os.path.join(state_dir(), TURN_FILE)
+def working_path():
+    return os.path.join(state_dir(), "working.json")
 
 
-def read_turn():
+def read_working():
+    """Map of session_id -> when it started working, minus stale entries."""
     try:
-        with open(turn_path()) as fh:
-            return fh.read().strip()
+        with open(working_path()) as fh:
+            w = json.load(fh)
     except Exception:
-        return ""
+        return {}
+    now = time.time()
+    return {k: v for k, v in w.items()
+            if isinstance(v, (int, float)) and now - v < STALE_AFTER}
+
+
+def write_working(w):
+    tmp = working_path() + ".%d.tmp" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(w, fh)
+    os.replace(tmp, working_path())
+
+
+def session_id():
+    """Which tab is this hook from? Claude Code sends session_id on stdin."""
+    sid = os.environ.get("CLAUDE_SESSION_ID")
+    if sid:
+        return sid
+    if not sys.stdin.isatty():
+        try:
+            raw = sys.stdin.read(65536)
+            if raw.strip():
+                sid = json.loads(raw).get("session_id")
+                if sid:
+                    return str(sid)
+        except Exception:
+            pass
+    # Last resort: one bucket per terminal, so tabs still differ.
+    return "tty-%s" % (os.environ.get("TERM_SESSION_ID") or os.getppid())
 
 
 def cmd_arm(_):
-    """UserPromptSubmit: Claude is about to work.
+    """UserPromptSubmit: this tab started working.
 
-    Wait out START_DELAY first. A quick answer stays silent; only real work
-    gets a soundtrack. Forked so the hook returns immediately.
+    Music starts only if no tab was already working - a second tab joining
+    must not stomp the station the first one is playing. Waits out
+    START_DELAY first, so a quick answer stays silent.
     """
-    token = "%d-%d" % (time.time() * 1000, random.randint(0, 9999))
-    with open(turn_path(), "w") as fh:
-        fh.write(token)
+    sid = session_id()
+    w = read_working()
+    was_idle = not w
+    w[sid] = time.time()
+    write_working(w)
+    if not was_idle:
+        return                       # music already going for another tab
     if os.fork() != 0:
         return                       # parent returns to the hook at once
     os.setsid()
     time.sleep(START_DELAY)
-    if read_turn() != token:
-        os._exit(0)                  # turn already ended - stay quiet
+    if sid not in read_working():
+        os._exit(0)                  # this tab finished - stay quiet
+    try:
+        if not ipc("get_property", "idle-active"):
+            os._exit(0)              # a station is already loaded - don't stomp it
+    except Exception:
+        pass                         # no daemon yet - ours to start
     try:
         s = load_state()
         pool = [x for x in stations() if x["id"] != s.get("station")] or stations()
@@ -643,12 +682,25 @@ def cmd_arm(_):
 
 
 def cmd_disarm(_):
-    """Stop: Claude finished. Silence means done."""
-    try:
-        os.unlink(turn_path())
-    except OSError:
-        pass
+    """Stop / SessionEnd: this tab finished. Silence only when ALL tabs are done."""
+    sid = session_id()
+    w = read_working()
+    w.pop(sid, None)
+    write_working(w)
+    if w:
+        return                       # another tab is still working - keep playing
     stop_daemon()
+
+
+def cmd_working(_):
+    """Which tabs are working right now (debugging)."""
+    w = read_working()
+    if not w:
+        say("no tab is working")
+        return
+    now = time.time()
+    for sid, started in sorted(w.items(), key=lambda kv: kv[1]):
+        say("%-40s %.0fs" % (sid, now - started))
 
 
 def cmd_duck(_):
@@ -686,7 +738,7 @@ COMMANDS = {
     "statusline": cmd_statusline,
     "start": cmd_start, "stop": cmd_stop,
     "duck": cmd_duck, "unduck": cmd_unduck,
-    "arm": cmd_arm, "disarm": cmd_disarm,
+    "arm": cmd_arm, "disarm": cmd_disarm, "working": cmd_working,
 }
 
 USAGE = """ccradio - internet radio while Claude works
@@ -698,6 +750,7 @@ USAGE = """ccradio - internet radio while Claude works
   vol up|down|<n>    volume, 0-130 (mpv only, never system volume)
   now                current track
   status             what's playing right now
+  working            which Claude Code tabs are working right now
   statusline         compact segment for the Claude Code statusline
   stations           list built-in stations
   search <term>      find more via Radio Browser

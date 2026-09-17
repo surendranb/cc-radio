@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import time
 import threading
@@ -57,6 +58,9 @@ class FakeMpv:
                         out = self.props.get(cmd[1])
                     elif cmd[0] == "set_property":
                         self.props[cmd[1]] = cmd[2]
+                    elif cmd[0] == "loadfile":
+                        self.props["idle-active"] = False
+                        self.props["path"] = cmd[1]
                     elif cmd[0] == "cycle" and cmd[1] == "pause":
                         self.props["pause"] = not self.props.get("pause", False)
                     conn.sendall((json.dumps(
@@ -92,7 +96,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def start_mpv(self, **props):
-        base = {"volume": 70.0, "pause": False, "idle-active": False, "path": ""}
+        base = {"volume": 70.0, "pause": False, "idle-active": True, "path": ""}
         base.update(props)
         self.mpv = FakeMpv(self.sock, base)
         return self.mpv
@@ -205,13 +209,26 @@ class TestNowPlaying(Base):
 
 
 class TestWorkingSignal(Base):
-    """Music plays while Claude works, and only then."""
+    """Music plays while ANY tab is working, and only then."""
+
+    A = '{"session_id":"tab-A"}'
+    B = '{"session_id":"tab-B"}'
+
+    def _as(self, payload, fn):
+        """Run a hook command as if it came from that tab."""
+        import io
+        real, sys.stdin = sys.stdin, io.StringIO(payload)
+        try:
+            sys.stdin.isatty = lambda: False
+            fn([])
+        finally:
+            sys.stdin = real
 
     def test_quick_turn_stays_silent(self):
         self.start_mpv()
         self.cc.START_DELAY = 0.4
-        self.cc.cmd_arm([])
-        self.cc.cmd_disarm([])          # turn ended before the delay elapsed
+        self._as(self.A, self.cc.cmd_arm)
+        self._as(self.A, self.cc.cmd_disarm)
         time.sleep(0.9)
         self.assertEqual([c for c in self.mpv.seen if c and c[0] == "loadfile"], [],
                          "a two-second answer must not trigger music")
@@ -219,25 +236,56 @@ class TestWorkingSignal(Base):
     def test_long_turn_starts_music(self):
         self.start_mpv()
         self.cc.START_DELAY = 0.3
-        self.cc.cmd_arm([])
+        self._as(self.A, self.cc.cmd_arm)
         time.sleep(1.4)
-        self.assertTrue([c for c in self.mpv.seen if c and c[0] == "loadfile"],
-                        "real work should get a soundtrack")
+        self.assertTrue([c for c in self.mpv.seen if c and c[0] == "loadfile"])
 
-    def test_disarm_clears_the_turn_token(self):
-        self.cc.cmd_arm([])
-        self.assertTrue(self.cc.read_turn())
-        self.cc.cmd_disarm([])
-        self.assertEqual(self.cc.read_turn(), "")
+    def test_second_tab_does_not_stomp_the_station(self):
+        self.start_mpv()
+        self.cc.START_DELAY = 0.3
+        self._as(self.A, self.cc.cmd_arm)
+        time.sleep(1.2)
+        before = len([c for c in self.mpv.seen if c and c[0] == "loadfile"])
+        self._as(self.B, self.cc.cmd_arm)
+        time.sleep(1.2)
+        after = len([c for c in self.mpv.seen if c and c[0] == "loadfile"])
+        self.assertEqual(before, after,
+                         "a second tab joining must not change the station")
 
-    def test_each_arm_issues_a_fresh_token(self):
-        self.cc.cmd_arm([])
-        first = self.cc.read_turn()
-        self.cc.cmd_arm([])
-        self.assertNotEqual(self.cc.read_turn(), first)
+    def test_one_tab_finishing_keeps_music_for_the_others(self):
+        self._as(self.A, self.cc.cmd_arm)
+        self._as(self.B, self.cc.cmd_arm)
+        m = self.start_mpv()
+        self._as(self.A, self.cc.cmd_disarm)
+        self.assertNotIn(["quit"], m.seen,
+                         "tab A finishing must not silence tab B's music")
+        self.assertIn("tab-B", self.cc.read_working())
 
-    def test_disarm_with_no_daemon_is_harmless(self):
-        self.cc.cmd_disarm([])
+    def test_music_stops_only_when_every_tab_is_done(self):
+        self._as(self.A, self.cc.cmd_arm)
+        self._as(self.B, self.cc.cmd_arm)
+        m = self.start_mpv()
+        self._as(self.A, self.cc.cmd_disarm)
+        self._as(self.B, self.cc.cmd_disarm)
+        self.assertIn(["quit"], m.seen)
+        self.assertEqual(self.cc.read_working(), {})
+
+    def test_repeated_disarm_is_harmless(self):
+        self._as(self.A, self.cc.cmd_arm)
+        self._as(self.A, self.cc.cmd_disarm)
+        self._as(self.A, self.cc.cmd_disarm)
+        self.assertEqual(self.cc.read_working(), {})
+
+    def test_stale_tabs_are_forgotten(self):
+        self.cc.write_working({"crashed-tab": time.time() - self.cc.STALE_AFTER - 10,
+                               "live-tab": time.time()})
+        self.assertEqual(list(self.cc.read_working()), ["live-tab"],
+                         "a tab that never reported finishing must not wedge the radio on")
+
+    def test_sessions_are_told_apart(self):
+        self._as(self.A, self.cc.cmd_arm)
+        self._as(self.B, self.cc.cmd_arm)
+        self.assertEqual(sorted(self.cc.read_working()), ["tab-A", "tab-B"])
 
 
 class TestDuckSignal(Base):

@@ -21,7 +21,7 @@ Needs `mpv`. That is the only dependency.
 brew install mpv          # macOS
 sudo apt install mpv      # Debian/Ubuntu
 
-claude plugin marketplace add OWNER/cc-radio
+claude plugin marketplace add surendranb/cc-radio
 claude plugin install radio@cc-radio
 ```
 
@@ -43,6 +43,24 @@ The 6-second delay is the whole trick. Without it every "yes" and "thanks"
 triggers a burst of noise. With it, silence means done and music means working.
 
 A different station each time, so a long session doesn't loop the same track bed.
+
+## Many tabs open?
+
+One machine, one pair of speakers, one radio. cc-radio tracks which tabs are
+working, keyed by Claude Code's `session_id`:
+
+| | |
+|---|---|
+| **Music starts** | when the *first* tab starts working |
+| **A second tab joins** | keeps playing — it does not change the station mid-song |
+| **One tab finishes** | music keeps playing, because another tab is still working |
+| **The last tab finishes** | silence |
+
+So silence always means *nothing is working anywhere*, which is the only way the
+signal stays honest. `ccradio working` shows which tabs are busy right now.
+
+A tab that dies without reporting in is forgotten after 2 hours, so a crash can
+never wedge the music on forever.
 
 ## Controls (optional)
 

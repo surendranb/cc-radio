@@ -4,11 +4,16 @@
 #
 #   "statusLine": { "type": "command",
 #                   "command": "/path/to/ccradio-statusline", "padding": 0 }
-YOUR_STATUSLINE="${CCRADIO_BASE_STATUSLINE:-python3 $HOME/.config/ai-usage-widget/aiusage.py --statusline}"
+# Your existing statusline command, if you have one. Leave empty for radio only.
+YOUR_STATUSLINE="${CCRADIO_BASE_STATUSLINE:-}"
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 payload="$(cat)"                      # statusline JSON arrives on stdin, read once
-base="$(printf '%s' "$payload" | sh -c "$YOUR_STATUSLINE" 2>/dev/null)"
+if [ -n "$YOUR_STATUSLINE" ]; then
+  base="$(printf '%s' "$payload" | sh -c "$YOUR_STATUSLINE" 2>/dev/null)"
+else
+  base=""
+fi
 radio="$("$ROOT/bin/ccradio" statusline 2>/dev/null)"
 
 if [ -n "$radio" ] && [ -n "$base" ]; then
