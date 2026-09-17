@@ -64,11 +64,39 @@ ccradio stop               stop everything
 
 | When | What happens |
 |---|---|
-| Claude stops and asks you something | Volume ducks to 25% |
-| You send your next prompt | Volume restores |
-| You close your last Claude Code window | Music stops |
+| Claude stops and waits on you | **Music pauses** |
+| You send your next prompt | Music resumes |
+| Another window is still working | Keeps playing - only pauses when every window is idle |
+| You close your last Claude Code window | Music stops, and remembers it was on |
+| You open Claude Code again | Resumes your last station, but only if it was playing when you quit |
 
-Closing *one* window when others are open leaves the music playing.
+Music you paused or stopped **by hand** stays that way. The hooks only undo what
+the hooks did.
+
+## Statusline
+
+Show the current track in your Claude Code statusline:
+
+```
+⚙ Opus 5  |  ♪ Groove Salad · Jens Buchert - Lakelectric
+```
+
+`ccradio statusline` prints one compact segment, or nothing when the radio is off.
+
+If you already have a statusline, use the wrapper - it runs yours first and
+appends the radio:
+
+```jsonc
+// ~/.claude/settings.json
+"statusLine": {
+  "type": "command",
+  "command": "/path/to/cc-radio/bin/ccradio-statusline",
+  "padding": 0
+}
+```
+
+Point it at your existing command with `CCRADIO_BASE_STATUSLINE`, or edit the
+default at the top of the script.
 
 ## Stations
 

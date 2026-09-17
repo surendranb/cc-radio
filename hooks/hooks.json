@@ -1,16 +1,48 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session start", "async": true } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session start",
+            "async": true
+          }
+        ]
+      }
     ],
     "SessionEnd": [
-      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session end", "async": true } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session end",
+            "async": true
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" duck", "async": true } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" idle",
+            "async": true
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" unduck", "async": true } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" active",
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }

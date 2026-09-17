@@ -274,6 +274,131 @@ class TestSessionRefcount(Base):
         self.assertNotIn(["quit"], m.seen, "music must survive one window closing")
 
 
+class TestIdlePause(Base):
+    """Stop hook pauses; UserPromptSubmit resumes. Manual intent always wins."""
+
+    def _busy(self, n):
+        s = self.cc.load_state()
+        s["sessions"] = n
+        s["busy"] = n
+        self.cc.save_state(s)
+
+    def test_pauses_when_the_only_session_goes_idle(self):
+        m = self.start_mpv(pause=False)
+        self._busy(1)
+        self.cc.cmd_idle([])
+        self.assertTrue(m.props["pause"], "music must stop when Claude waits on you")
+        self.assertTrue(self.cc.load_state()["autopaused"])
+
+    def test_resumes_on_next_prompt(self):
+        m = self.start_mpv(pause=False)
+        self._busy(1)
+        self.cc.cmd_idle([])
+        self.cc.cmd_active([])
+        self.assertFalse(m.props["pause"])
+        self.assertFalse(self.cc.load_state()["autopaused"])
+
+    def test_keeps_playing_while_another_window_is_still_working(self):
+        m = self.start_mpv(pause=False)
+        self._busy(2)
+        self.cc.cmd_idle([])
+        self.assertFalse(m.props["pause"], "one window idle, another working - keep playing")
+        self.cc.cmd_idle([])
+        self.assertTrue(m.props["pause"], "now every window is idle")
+
+    def test_does_not_resume_music_you_paused_by_hand(self):
+        m = self.start_mpv(pause=False)
+        self._busy(1)
+        self.cc.cmd_pause([])                    # you hit pause
+        self.assertTrue(m.props["pause"])
+        self.cc.cmd_idle([])
+        self.cc.cmd_active([])                   # you send a prompt
+        self.assertTrue(m.props["pause"], "your pause must survive the hooks")
+
+    def test_hand_pause_during_autopause_sticks(self):
+        m = self.start_mpv(pause=False)
+        self._busy(1)
+        self.cc.cmd_idle([])                     # hooks pause it
+        self.cc.cmd_pause([])                    # you resume by hand
+        self.assertFalse(m.props["pause"])
+        self.cc.cmd_active([])
+        self.assertFalse(m.props["pause"], "still playing, not re-paused")
+
+    def test_busy_never_goes_negative_when_hooks_are_missed(self):
+        self.start_mpv(pause=False)
+        for _ in range(5):
+            self.cc.cmd_idle([])
+        self.assertEqual(self.cc.load_state()["busy"], 0)
+
+    def test_busy_is_capped_at_session_count(self):
+        self.start_mpv(pause=False)
+        s = self.cc.load_state()
+        s["sessions"] = 2
+        self.cc.save_state(s)
+        for _ in range(6):
+            self.cc.cmd_active([])
+        self.assertLessEqual(self.cc.load_state()["busy"], 2)
+
+    def test_idle_with_no_daemon_is_harmless(self):
+        self.cc.cmd_idle([])
+        self.assertFalse(self.cc.load_state()["autopaused"])
+
+
+class TestAutoResume(Base):
+    def test_remembers_it_was_playing_when_last_window_closed(self):
+        self.start_mpv(pause=False)
+        self.cc.cmd_session(["start"])
+        self.cc.cmd_session(["end"])
+        self.assertTrue(self.cc.load_state()["was_playing"])
+
+    def test_remembers_silence_when_you_stopped_it(self):
+        self.start_mpv(pause=False)
+        self.cc.cmd_session(["start"])
+        self.cc.cmd_stop([])
+        self.cc.cmd_session(["end"])
+        self.assertFalse(self.cc.load_state()["was_playing"],
+                         "stopping by hand must not auto-resume next time")
+
+    def test_paused_at_shutdown_counts_as_not_playing(self):
+        self.start_mpv(pause=True)
+        self.cc.cmd_session(["start"])
+        self.cc.cmd_session(["end"])
+        self.assertFalse(self.cc.load_state()["was_playing"])
+
+    def test_first_session_resumes_previous_station(self):
+        m = self.start_mpv(pause=False)
+        s = self.cc.load_state()
+        s["was_playing"] = True
+        s["station"] = "soma-dronezone"
+        s["sessions"] = 0
+        self.cc.save_state(s)
+        self.cc.cmd_session(["start"])
+        loads = [c for c in m.seen if c and c[0] == "loadfile"]
+        self.assertTrue(loads, "should have resumed playback")
+        self.assertIn("dronezone", loads[0][1])
+
+    def test_second_window_does_not_restart_playback(self):
+        m = self.start_mpv(pause=False)
+        s = self.cc.load_state()
+        s["was_playing"] = True
+        s["station"] = "soma-dronezone"
+        s["sessions"] = 1
+        self.cc.save_state(s)
+        self.cc.cmd_session(["start"])
+        self.assertEqual([c for c in m.seen if c and c[0] == "loadfile"], [],
+                         "opening a second window must not restart the stream")
+
+    def test_no_resume_when_it_was_not_playing(self):
+        m = self.start_mpv(pause=False)
+        s = self.cc.load_state()
+        s["was_playing"] = False
+        s["station"] = "soma-dronezone"
+        s["sessions"] = 0
+        self.cc.save_state(s)
+        self.cc.cmd_session(["start"])
+        self.assertEqual([c for c in m.seen if c and c[0] == "loadfile"], [])
+
+
 class TestPlaylistResolution(Base):
     def test_direct_stream_url_passes_through_untouched(self):
         u = "https://ice2.somafm.com/groovesalad-256-mp3"
@@ -298,6 +423,12 @@ class TestPlugin(unittest.TestCase):
             hooks = json.load(fh)["hooks"]
         self.assertEqual(sorted(hooks),
                          ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
+        wiring = {ev: v[0]["hooks"][0]["command"].rsplit('"', 1)[-1].strip()
+                  for ev, v in hooks.items()}
+        self.assertEqual(wiring["Stop"], "idle")
+        self.assertEqual(wiring["UserPromptSubmit"], "active")
+        self.assertEqual(wiring["SessionStart"], "session start")
+        self.assertEqual(wiring["SessionEnd"], "session end")
 
     def test_executables_are_executable(self):
         for p in ("bin/ccradio", "hooks/hook.sh"):

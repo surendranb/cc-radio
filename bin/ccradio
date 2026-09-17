@@ -67,6 +67,10 @@ def state_path():
 DEFAULT_STATE = {
     "station": None, "order": [], "volume": 70, "shuffle": False,
     "ducked": False, "preduck": None, "pid": None, "sessions": 0,
+    # busy       - how many sessions have Claude working right now
+    # autopaused - we paused it, so we may safely resume it
+    # was_playing- playing when the last window closed, for auto-resume
+    "busy": 0, "autopaused": False, "was_playing": False,
 }
 
 
@@ -282,6 +286,8 @@ def play(station, s=None):
     s["station"] = station["id"]
     s["ducked"] = False
     s["preduck"] = None
+    s["autopaused"] = False
+    s["was_playing"] = True
     save_state(s)
     return s
 
@@ -469,6 +475,11 @@ def cmd_pause(_):
         die("not playing - run: ccradio play")
     ipc("cycle", "pause")
     paused = ipc("get_property", "pause")
+    # You touched it by hand, so the idle hook must not undo your choice.
+    s = load_state()
+    s["autopaused"] = False
+    s["was_playing"] = not paused
+    save_state(s)
     say("|| paused" if paused else "> resumed")
 
 
@@ -502,6 +513,33 @@ def cmd_status(_):
     say(describe())
 
 
+def cmd_statusline(args):
+    """One compact segment for the Claude Code statusline.
+
+    Prints nothing when the radio is off, so the statusline stays clean.
+    Must never fail or hang - the statusline runs on every render.
+    """
+    width = 46
+    for a in args:
+        if a.startswith("--width="):
+            width = max(12, int(a.split("=", 1)[1]))
+    try:
+        if not alive():
+            return
+        paused = bool(ipc("get_property", "pause", timeout=0.4))
+        st = find_station(load_state().get("station"))
+        name = st["name"] if st else "radio"
+        track = None if paused else now_playing()
+        seg = ("%s %s" % ("||" if paused else "\u266a", name))
+        if track:
+            seg += " \u00b7 " + track
+        if len(seg) > width:
+            seg = seg[:width - 1].rstrip() + "\u2026"
+        say(seg)
+    except Exception:
+        return
+
+
 def cmd_stations(_):
     s = load_state()
     cur = s.get("station")
@@ -531,6 +569,9 @@ def cmd_start(_):
 
 
 def cmd_stop(_):
+    s = load_state()
+    s["was_playing"] = False
+    save_state(s)
     stop_daemon()
     say("stopped")
 
@@ -563,14 +604,77 @@ def cmd_unduck(_):
     save_state(s)
 
 
-def cmd_session(args):
-    """Refcount live Claude Code sessions so one closing window keeps the music."""
+def is_playing():
+    """True only if the daemon is up and not paused."""
+    try:
+        return not ipc("get_property", "pause")
+    except Exception:
+        return False
+
+
+def cmd_idle(_):
+    """Hook: Claude finished in one window. Pause once no window is still working."""
     s = load_state()
-    delta = 1 if (args and args[0] == "start") else -1
-    s["sessions"] = max(0, s.get("sessions", 0) + delta)
+    s["busy"] = max(0, s.get("busy", 0) - 1)
+    if s["busy"] > 0:
+        save_state(s)          # another window is still working - keep playing
+        return
+    if not alive() or not is_playing():
+        save_state(s)          # already stopped or paused by hand - leave it alone
+        return
+    try:
+        ipc("set_property", "pause", True)
+    except Exception:
+        save_state(s)
+        return
+    s["autopaused"] = True
     save_state(s)
-    if delta < 0 and s["sessions"] == 0:
-        stop_daemon()
+
+
+def cmd_active(_):
+    """Hook: you sent a prompt. Resume, but only what we paused ourselves."""
+    s = load_state()
+    s["busy"] = min(max(1, s.get("sessions", 1)), s.get("busy", 0) + 1)
+    if not s.get("autopaused"):
+        save_state(s)          # you paused it by hand - your intent wins
+        return
+    try:
+        ipc("set_property", "pause", False)
+    except Exception:
+        pass
+    s["autopaused"] = False
+    save_state(s)
+
+
+def cmd_session(args):
+    """Refcount live Claude Code windows.
+
+    Closing one window keeps the music. Closing the last one stops it and
+    remembers whether it was playing, so the next session can pick it back up.
+    """
+    s = load_state()
+    if args and args[0] == "start":
+        first = s.get("sessions", 0) == 0
+        s["sessions"] = s.get("sessions", 0) + 1
+        save_state(s)
+        if first and s.get("was_playing") and s.get("station"):
+            st = find_station(s["station"])
+            if st:
+                try:
+                    play(st, load_state())
+                except Exception:
+                    pass
+        return
+
+    s["sessions"] = max(0, s.get("sessions", 0) - 1)
+    if s["sessions"] > 0:
+        save_state(s)
+        return
+    s["was_playing"] = is_playing()
+    s["busy"] = 0
+    s["autopaused"] = False
+    save_state(s)
+    stop_daemon()
 
 
 COMMANDS = {
@@ -578,8 +682,10 @@ COMMANDS = {
     "shuffle": cmd_shuffle, "pause": cmd_pause, "resume": cmd_pause,
     "vol": cmd_vol, "volume": cmd_vol, "now": cmd_now, "status": cmd_status,
     "stations": cmd_stations, "list": cmd_stations, "search": cmd_search,
+    "statusline": cmd_statusline,
     "start": cmd_start, "stop": cmd_stop,
-    "duck": cmd_duck, "unduck": cmd_unduck, "session": cmd_session,
+    "duck": cmd_duck, "unduck": cmd_unduck,
+    "idle": cmd_idle, "active": cmd_active, "session": cmd_session,
 }
 
 USAGE = """ccradio - internet radio while Claude works
@@ -591,6 +697,7 @@ USAGE = """ccradio - internet radio while Claude works
   vol up|down|<n>    volume, 0-130 (mpv only, never system volume)
   now                current track
   status             what's playing right now
+  statusline         compact segment for the Claude Code statusline
   stations           list built-in stations
   search <term>      find more via Radio Browser
   stop               stop playback and the daemon
