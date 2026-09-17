@@ -1,22 +1,11 @@
 {
   "hooks": {
-    "SessionStart": [
+    "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session start",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session end",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" arm",
             "async": true
           }
         ]
@@ -27,18 +16,40 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" idle",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" disarm",
             "async": true
           }
         ]
       }
     ],
-    "UserPromptSubmit": [
+    "Notification": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" active",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" duck",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" duck",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" disarm",
             "async": true
           }
         ]

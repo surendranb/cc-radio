@@ -66,11 +66,7 @@ def state_path():
 
 DEFAULT_STATE = {
     "station": None, "order": [], "volume": 70, "shuffle": False,
-    "ducked": False, "preduck": None, "pid": None, "sessions": 0,
-    # busy       - how many sessions have Claude working right now
-    # autopaused - we paused it, so we may safely resume it
-    # was_playing- playing when the last window closed, for auto-resume
-    "busy": 0, "autopaused": False, "was_playing": False,
+    "ducked": False, "preduck": None, "pid": None,
 }
 
 
@@ -286,8 +282,6 @@ def play(station, s=None):
     s["station"] = station["id"]
     s["ducked"] = False
     s["preduck"] = None
-    s["autopaused"] = False
-    s["was_playing"] = True
     save_state(s)
     return s
 
@@ -475,11 +469,6 @@ def cmd_pause(_):
         die("not playing - run: ccradio play")
     ipc("cycle", "pause")
     paused = ipc("get_property", "pause")
-    # You touched it by hand, so the idle hook must not undo your choice.
-    s = load_state()
-    s["autopaused"] = False
-    s["was_playing"] = not paused
-    save_state(s)
     say("|| paused" if paused else "> resumed")
 
 
@@ -569,9 +558,6 @@ def cmd_start(_):
 
 
 def cmd_stop(_):
-    s = load_state()
-    s["was_playing"] = False
-    save_state(s)
     stop_daemon()
     say("stopped")
 
@@ -612,69 +598,84 @@ def is_playing():
         return False
 
 
-def cmd_idle(_):
-    """Hook: Claude finished in one window. Pause once no window is still working."""
-    s = load_state()
-    s["busy"] = max(0, s.get("busy", 0) - 1)
-    if s["busy"] > 0:
-        save_state(s)          # another window is still working - keep playing
-        return
-    if not alive() or not is_playing():
-        save_state(s)          # already stopped or paused by hand - leave it alone
-        return
+# --------------------------------------------------------------------------
+# the working signal: music plays while Claude is working, and only then
+# --------------------------------------------------------------------------
+
+TURN_FILE = "turn"          # holds the id of the turn currently in flight
+START_DELAY = 6.0           # seconds of work before the music earns its place
+
+
+def turn_path():
+    return os.path.join(state_dir(), TURN_FILE)
+
+
+def read_turn():
     try:
-        ipc("set_property", "pause", True)
+        with open(turn_path()) as fh:
+            return fh.read().strip()
     except Exception:
-        save_state(s)
-        return
-    s["autopaused"] = True
-    save_state(s)
+        return ""
 
 
-def cmd_active(_):
-    """Hook: you sent a prompt. Resume, but only what we paused ourselves."""
-    s = load_state()
-    s["busy"] = min(max(1, s.get("sessions", 1)), s.get("busy", 0) + 1)
-    if not s.get("autopaused"):
-        save_state(s)          # you paused it by hand - your intent wins
-        return
+def cmd_arm(_):
+    """UserPromptSubmit: Claude is about to work.
+
+    Wait out START_DELAY first. A quick answer stays silent; only real work
+    gets a soundtrack. Forked so the hook returns immediately.
+    """
+    token = "%d-%d" % (time.time() * 1000, random.randint(0, 9999))
+    with open(turn_path(), "w") as fh:
+        fh.write(token)
+    if os.fork() != 0:
+        return                       # parent returns to the hook at once
+    os.setsid()
+    time.sleep(START_DELAY)
+    if read_turn() != token:
+        os._exit(0)                  # turn already ended - stay quiet
     try:
-        ipc("set_property", "pause", False)
+        s = load_state()
+        pool = [x for x in stations() if x["id"] != s.get("station")] or stations()
+        play(random.choice(pool), s)
     except Exception:
         pass
-    s["autopaused"] = False
-    save_state(s)
+    os._exit(0)
 
 
-def cmd_session(args):
-    """Refcount live Claude Code windows.
-
-    Closing one window keeps the music. Closing the last one stops it and
-    remembers whether it was playing, so the next session can pick it back up.
-    """
-    s = load_state()
-    if args and args[0] == "start":
-        first = s.get("sessions", 0) == 0
-        s["sessions"] = s.get("sessions", 0) + 1
-        save_state(s)
-        if first and s.get("was_playing") and s.get("station"):
-            st = find_station(s["station"])
-            if st:
-                try:
-                    play(st, load_state())
-                except Exception:
-                    pass
-        return
-
-    s["sessions"] = max(0, s.get("sessions", 0) - 1)
-    if s["sessions"] > 0:
-        save_state(s)
-        return
-    s["was_playing"] = is_playing()
-    s["busy"] = 0
-    s["autopaused"] = False
-    save_state(s)
+def cmd_disarm(_):
+    """Stop: Claude finished. Silence means done."""
+    try:
+        os.unlink(turn_path())
+    except OSError:
+        pass
     stop_daemon()
+
+
+def cmd_duck(_):
+    """Notification / PermissionRequest: Claude needs you. Drop out of the way."""
+    s = load_state()
+    if s.get("ducked") or not alive():
+        return
+    s["preduck"] = s["volume"]
+    try:
+        ipc("set_property", "volume", max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO)))
+    except Exception:
+        return
+    s["ducked"] = True
+    save_state(s)
+
+
+def cmd_unduck(_):
+    s = load_state()
+    if not s.get("ducked"):
+        return
+    try:
+        ipc("set_property", "volume", s.get("preduck") or s["volume"])
+    except Exception:
+        pass
+    s["ducked"] = False
+    s["preduck"] = None
+    save_state(s)
 
 
 COMMANDS = {
@@ -685,7 +686,7 @@ COMMANDS = {
     "statusline": cmd_statusline,
     "start": cmd_start, "stop": cmd_stop,
     "duck": cmd_duck, "unduck": cmd_unduck,
-    "idle": cmd_idle, "active": cmd_active, "session": cmd_session,
+    "arm": cmd_arm, "disarm": cmd_disarm,
 }
 
 USAGE = """ccradio - internet radio while Claude works

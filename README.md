@@ -1,17 +1,17 @@
 # cc-radio
 
-Ad-free internet radio that plays while Claude Code works.
+**Music that plays while Claude Code is working, so you know by ear when it's done.**
 
-Switch stations, skip, shuffle, and change volume without leaving your terminal —
-and without spending a model turn on it.
+Not background ambiance you switch on. The music *is* the progress indicator.
 
 ```
-$ ccradio play groovesalad
-> Groove Salad  (ambient, electronic)
-
-$ ccradio status
-playing  |  Groove Salad  |  Kick Bong - Kind Of Imagination  |  vol 55
+you send a deep problem   ──►  ...6 seconds of real work...  ──►  ♪ music starts
+Claude needs your input   ──►  music ducks
+Claude finishes           ──►  silence
+Claude goes on another tear ──►  ♪ different station
 ```
+
+A quick two-second answer stays silent. Only real work earns a soundtrack.
 
 ## Install
 
@@ -20,83 +20,59 @@ Needs `mpv`. That is the only dependency.
 ```sh
 brew install mpv          # macOS
 sudo apt install mpv      # Debian/Ubuntu
-```
 
-Then:
-
-```sh
 claude plugin marketplace add OWNER/cc-radio
 claude plugin install radio@cc-radio
 ```
 
-Put `ccradio` on your PATH so you can drive it without a model turn:
+Restart Claude Code. That's it — there is nothing to turn on.
 
-```sh
-ln -s ~/.claude/plugins/cache/cc-radio/radio/*/bin/ccradio /usr/local/bin/ccradio
+## How it works
+
+Five hooks, one script. No configuration.
+
+| Hook | What it means | What happens |
+|---|---|---|
+| `UserPromptSubmit` | Claude starts working | Arms a timer. After 6s of real work, music starts on a random station |
+| `Stop` | Claude finished | Music stops |
+| `Notification` | Claude needs your attention | Volume ducks to 25% |
+| `PermissionRequest` | Claude is asking permission | Volume ducks |
+| `SessionEnd` | You closed the window | Music stops |
+
+The 6-second delay is the whole trick. Without it every "yes" and "thanks"
+triggers a burst of noise. With it, silence means done and music means working.
+
+A different station each time, so a long session doesn't loop the same track bed.
+
+## Controls (optional)
+
+You never need these — the hooks do everything. They exist for when you want them:
+
 ```
-
-## Use
-
-Two ways to control it. Prefer the first.
-
-| | |
-|---|---|
-| `!ccradio next` | instant, costs nothing |
-| `/radio next` | ~3s, costs a model turn — use it for search and plain-English requests |
-
-```
-ccradio play [station]     start, or switch station
+ccradio play [station]     pick a station by hand
 ccradio next / prev        move one station along
-ccradio shuffle            reshuffle the station order
+ccradio shuffle            reshuffle the order
 ccradio pause              pause or resume
-ccradio vol up|down|<n>    volume 0-130
+ccradio vol up|down|<n>    volume 0-130 (mpv only, never system volume)
 ccradio now                current track
 ccradio status             what's playing
 ccradio stations           list built-in stations
-ccradio search <term>      find more, then: ccradio play <number>
+ccradio search <term>      find more via Radio Browser
 ccradio stop               stop everything
 ```
 
-`/radio` also understands plain English: *"put on something ambient"*,
-*"find me a jazz station"*, *"turn it down"*.
+Run them instantly with `!ccradio next` in the Claude Code prompt, or via
+`/radio next` if you want plain English ("put on something ambient").
 
-## What it does automatically
-
-| When | What happens |
-|---|---|
-| Claude stops and waits on you | **Music pauses** |
-| You send your next prompt | Music resumes |
-| Another window is still working | Keeps playing - only pauses when every window is idle |
-| You close your last Claude Code window | Music stops, and remembers it was on |
-| You open Claude Code again | Resumes your last station, but only if it was playing when you quit |
-
-Music you paused or stopped **by hand** stays that way. The hooks only undo what
-the hooks did.
-
-## Statusline
-
-Show the current track in your Claude Code statusline:
+## Statusline (optional)
 
 ```
 ⚙ Opus 5  |  ♪ Groove Salad · Jens Buchert - Lakelectric
 ```
 
-`ccradio statusline` prints one compact segment, or nothing when the radio is off.
-
-If you already have a statusline, use the wrapper - it runs yours first and
-appends the radio:
-
-```jsonc
-// ~/.claude/settings.json
-"statusLine": {
-  "type": "command",
-  "command": "/path/to/cc-radio/bin/ccradio-statusline",
-  "padding": 0
-}
-```
-
-Point it at your existing command with `CCRADIO_BASE_STATUSLINE`, or edit the
-default at the top of the script.
+`ccradio statusline` prints one segment, or nothing when the radio is off.
+Already have a statusline? `bin/ccradio-statusline` runs yours first and appends
+the radio — point it at your existing command with `CCRADIO_BASE_STATUSLINE`.
 
 ## Stations
 
@@ -110,36 +86,25 @@ default at the top of the script.
 `ccradio search <term>` reaches the [Radio Browser](https://www.radio-browser.info/)
 directory for anything else. No API key.
 
-**On "free and open source":** these stations are free to listen to, ad-free, and
-listener-supported. The *music* on them is commercially licensed — it is not
-open-source or Creative Commons. If you want strictly CC or public-domain audio,
-look at Free Music Archive, ccMixter, and Musopen instead.
+**On "free and open source":** these stations are free to listen to and ad-free.
+The *music* on them is commercially licensed — not open-source or Creative
+Commons. For strictly CC or public-domain audio, look at Free Music Archive,
+ccMixter, and Musopen.
 
-## How it works
-
-```
-  mpv --idle --input-ipc-server=$SOCK        detached daemon, survives your turns
-        ^
-        | JSON over a unix socket
-        |
-   bin/ccradio  <->  ~/.local/state/ccradio/state.json
-        ^                    ^
-   /radio, !ccradio     hooks (duck / unduck / session refcount)
-```
+## Why a daemon
 
 Claude Code keeps no process alive between turns, so the player has to live
-outside it. mpv is the only common player with a live control socket — it is what
-makes real pause and real volume possible without killing the stream.
+outside it. mpv runs detached with a JSON IPC socket — the only common player
+that supports live pause, volume, and now-playing metadata without killing the
+stream. Volume is mpv's own software volume; it never touches your system volume.
 
-Volume is mpv's own software volume. It never touches your system volume.
+## Tune it
 
-## Notes
-
-- `next` means **next station**, not next track. Live radio has no track list to
-  skip within.
-- Pause resumes *live*, not from where you paused. It is radio.
-- One daemon is shared across all your Claude Code windows, because you have one
-  set of speakers.
+| Want | Change |
+|---|---|
+| Music sooner or later | `START_DELAY` in `bin/ccradio` (default 6.0s) |
+| Quieter ducking | `DUCK_RATIO` (default 0.25) |
+| Your own stations | `stations/curated.json` |
 
 ## Develop
 
