@@ -1,0 +1,14 @@
+{
+  "name": "cc-radio",
+  "owner": {
+    "name": "Surendran"
+  },
+  "plugins": [
+    {
+      "name": "radio",
+      "source": "./",
+      "description": "Ad-free internet radio while Claude works."
+    }
+  ],
+  "description": "Internet radio for Claude Code - ad-free stations that play while you work."
+}

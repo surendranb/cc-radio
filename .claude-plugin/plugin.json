@@ -1,0 +1,10 @@
+{
+  "name": "radio",
+  "description": "Ad-free internet radio while Claude works. Station switching and playback controls that never cost a model turn.",
+  "version": "0.1.0",
+  "author": { "name": "Surendran" },
+  "homepage": "https://github.com/OWNER/cc-radio",
+  "repository": "https://github.com/OWNER/cc-radio",
+  "license": "MIT",
+  "keywords": ["radio", "music", "audio", "somafm", "focus", "background"]
+}

@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "updated": "2026-09-17",
+  "stations": [
+    {
+      "id": "soma-groovesalad",
+      "name": "Groove Salad",
+      "genre": "ambient, electronic",
+      "url": "https://ice2.somafm.com/groovesalad-256-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/groovesalad/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-dronezone",
+      "name": "Drone Zone",
+      "genre": "ambient",
+      "url": "https://ice2.somafm.com/dronezone-256-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/dronezone/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-defcon",
+      "name": "DEF CON Radio",
+      "genre": "electronic, specials",
+      "url": "https://ice2.somafm.com/defcon-256-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/defcon/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-lush",
+      "name": "Lush",
+      "genre": "electronic",
+      "url": "https://ice2.somafm.com/lush-128-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/lush/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-spacestation",
+      "name": "Space Station Soma",
+      "genre": "electronic",
+      "url": "https://ice2.somafm.com/spacestation-320-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/spacestation/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-beatblender",
+      "name": "Beat Blender",
+      "genre": "electronic",
+      "url": "https://ice2.somafm.com/beatblender-128-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/beatblender/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-fluid",
+      "name": "Fluid",
+      "genre": "electronic, hiphop",
+      "url": "https://ice2.somafm.com/fluid-128-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/fluid/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-deepspaceone",
+      "name": "Deep Space One",
+      "genre": "ambient",
+      "url": "https://ice2.somafm.com/deepspaceone-128-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/deepspaceone/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-secretagent",
+      "name": "Secret Agent",
+      "genre": "lounge",
+      "url": "https://ice2.somafm.com/secretagent-128-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/secretagent/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-bootliquor",
+      "name": "Boot Liquor",
+      "genre": "americana",
+      "url": "https://ice2.somafm.com/bootliquor-320-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/bootliquor/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-sonicuniverse",
+      "name": "Sonic Universe",
+      "genre": "jazz",
+      "url": "https://ice2.somafm.com/sonicuniverse-256-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/sonicuniverse/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "soma-thistle",
+      "name": "ThistleRadio",
+      "genre": "celtic, world",
+      "url": "https://ice2.somafm.com/thistle-128-mp3",
+      "source": "SomaFM",
+      "homepage": "https://somafm.com/thistle/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "rp-main",
+      "name": "Radio Paradise \u2014 Main Mix",
+      "genre": "eclectic rock",
+      "url": "https://stream.radioparadise.com/mp3-192",
+      "source": "Radio Paradise",
+      "homepage": "https://radioparadise.com/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "rp-mellow",
+      "name": "Radio Paradise \u2014 Mellow Mix",
+      "genre": "mellow, downtempo",
+      "url": "https://stream.radioparadise.com/mellow-192",
+      "source": "Radio Paradise",
+      "homepage": "https://radioparadise.com/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "rp-rock",
+      "name": "Radio Paradise \u2014 Rock Mix",
+      "genre": "rock",
+      "url": "https://stream.radioparadise.com/rock-192",
+      "source": "Radio Paradise",
+      "homepage": "https://radioparadise.com/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "rp-global",
+      "name": "Radio Paradise \u2014 Global Mix",
+      "genre": "world, global",
+      "url": "https://stream.radioparadise.com/global-192",
+      "source": "Radio Paradise",
+      "homepage": "https://radioparadise.com/",
+      "license": "free-to-listen, listener-supported, commercial-free"
+    },
+    {
+      "id": "plaza",
+      "name": "Nightwave Plaza",
+      "genre": "vaporwave, lo-fi",
+      "url": "https://radio.plaza.one/mp3",
+      "source": "Nightwave Plaza",
+      "homepage": "https://plaza.one/",
+      "license": "free-to-listen, commercial-free"
+    }
+  ]
+}

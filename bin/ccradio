@@ -1,0 +1,616 @@
+#!/usr/bin/env python3
+"""ccradio - internet radio for your terminal, driven by a detached mpv daemon.
+
+All state lives outside the calling process, so playback survives between
+Claude Code turns and across sessions.
+"""
+
+import json
+import os
+import random
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+UA = "cc-radio/0.1 (+https://github.com/cc-radio/cc-radio)"
+VOL_STEP = 10
+VOL_MAX = 130
+DUCK_FLOOR = 10
+DUCK_RATIO = 0.25
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CURATED = os.path.join(HERE, "stations", "curated.json")
+
+# Hardcoded last resort if curated.json is missing or corrupt.
+FALLBACK = [
+    {"id": "soma-groovesalad", "name": "Groove Salad", "genre": "ambient, electronic",
+     "url": "https://ice2.somafm.com/groovesalad-256-mp3", "source": "SomaFM"},
+    {"id": "soma-dronezone", "name": "Drone Zone", "genre": "ambient",
+     "url": "https://ice2.somafm.com/dronezone-256-mp3", "source": "SomaFM"},
+    {"id": "rp-main", "name": "Radio Paradise - Main Mix", "genre": "eclectic rock",
+     "url": "https://stream.radioparadise.com/mp3-192", "source": "Radio Paradise"},
+]
+
+
+# --------------------------------------------------------------------------
+# paths
+# --------------------------------------------------------------------------
+
+def state_dir():
+    d = os.environ.get("CCRADIO_STATE_DIR") or os.path.expanduser(
+        "~/.local/state/ccradio")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def sock_path():
+    if os.environ.get("CCRADIO_SOCK"):
+        return os.environ["CCRADIO_SOCK"]
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if run and os.path.isdir(run):
+        return os.path.join(run, "ccradio.sock")
+    return os.path.join(state_dir(), "ipc.sock")
+
+
+def state_path():
+    return os.path.join(state_dir(), "state.json")
+
+
+# --------------------------------------------------------------------------
+# state (atomic writes - several sessions may write at once)
+# --------------------------------------------------------------------------
+
+DEFAULT_STATE = {
+    "station": None, "order": [], "volume": 70, "shuffle": False,
+    "ducked": False, "preduck": None, "pid": None, "sessions": 0,
+}
+
+
+def load_state():
+    try:
+        with open(state_path()) as fh:
+            s = dict(DEFAULT_STATE, **json.load(fh))
+    except Exception:
+        s = dict(DEFAULT_STATE)
+    return s
+
+
+def save_state(s):
+    tmp = state_path() + ".%d.tmp" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(s, fh, indent=1)
+    os.replace(tmp, state_path())
+
+
+# --------------------------------------------------------------------------
+# stations
+# --------------------------------------------------------------------------
+
+def stations():
+    try:
+        with open(CURATED) as fh:
+            st = json.load(fh)["stations"]
+        if st:
+            return st
+    except Exception:
+        pass
+    return list(FALLBACK)
+
+
+def find_station(key):
+    st = stations()
+    key = key.lower()
+    for s in st:
+        if s["id"].lower() == key:
+            return s
+    for s in st:
+        if key in s["id"].lower() or key in s["name"].lower():
+            return s
+    return None
+
+
+def order_ids(s):
+    """Current rotation order, repaired if curated.json changed underneath us."""
+    live = [x["id"] for x in stations()]
+    order = [i for i in s.get("order") or [] if i in live]
+    if not order:
+        order = live
+    for i in live:
+        if i not in order:
+            order.append(i)
+    return order
+
+
+# --------------------------------------------------------------------------
+# mpv IPC
+# --------------------------------------------------------------------------
+
+class NotRunning(Exception):
+    pass
+
+
+def ipc(*command, timeout=2.0):
+    """Send one command to mpv and return its data field."""
+    path = sock_path()
+    if not os.path.exists(path):
+        raise NotRunning()
+    rid = random.randint(1, 2 ** 30)
+    payload = json.dumps({"command": list(command), "request_id": rid}) + "\n"
+    try:
+        sk = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sk.settimeout(timeout)
+        sk.connect(path)
+        sk.sendall(payload.encode())
+        buf = b""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                chunk = sk.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                # mpv interleaves async events; match our request_id.
+                if msg.get("request_id") == rid:
+                    sk.close()
+                    if msg.get("error") not in (None, "success"):
+                        raise RuntimeError(msg["error"])
+                    return msg.get("data")
+        sk.close()
+    except (ConnectionRefusedError, FileNotFoundError, OSError):
+        raise NotRunning()
+    raise NotRunning()
+
+
+def alive():
+    try:
+        ipc("get_property", "idle-active")
+        return True
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------
+# daemon
+# --------------------------------------------------------------------------
+
+def require_mpv():
+    if shutil.which("mpv"):
+        return
+    hint = ("brew install mpv" if sys.platform == "darwin"
+            else "sudo apt install mpv   # or your package manager")
+    die("mpv is not installed. cc-radio needs it.\n  %s" % hint)
+
+
+def start_daemon(s=None):
+    require_mpv()
+    s = s or load_state()
+    if alive():
+        return s
+    path = sock_path()
+    # Clear a stale socket left by a crashed daemon.
+    if os.path.exists(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    devnull = open(os.devnull, "wb")
+    proc = subprocess.Popen(
+        ["mpv", "--idle=yes", "--no-video", "--no-terminal",
+         "--input-ipc-server=" + path,
+         "--volume=%d" % s["volume"],
+         # Keep the stream alive through flaky wifi rather than dying.
+         "--network-timeout=30", "--stream-lavf-o=reconnect_streamed=1",
+         "--cache=yes", "--demuxer-max-bytes=8MiB"],
+        stdout=devnull, stderr=devnull, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    s["pid"] = proc.pid
+    for _ in range(50):
+        if alive():
+            break
+        time.sleep(0.1)
+    else:
+        die("mpv did not come up. Try: mpv --version")
+    save_state(s)
+    return s
+
+
+def stop_daemon():
+    s = load_state()
+    try:
+        ipc("quit")
+    except Exception:
+        pass
+    pid = s.get("pid")
+    if pid:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    s["pid"] = None
+    s["ducked"] = False
+    s["preduck"] = None
+    save_state(s)
+    try:
+        os.unlink(sock_path())
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------
+# playback
+# --------------------------------------------------------------------------
+
+def resolve_pls(url):
+    """SomaFM and friends hand out .pls playlists; mpv wants the stream."""
+    if not url.lower().endswith((".pls", ".m3u", ".m3u8")):
+        return url
+    if url.lower().endswith(".m3u8"):
+        return url  # HLS - mpv plays this directly
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        txt = urllib.request.urlopen(req, timeout=10).read().decode("utf-8", "replace")
+    except Exception:
+        return url
+    for line in txt.splitlines():
+        low = line.strip().lower()
+        if low.startswith("file1="):
+            return line.split("=", 1)[1].strip()
+        if line.strip().startswith("http"):
+            return line.strip()
+    return url
+
+
+def play(station, s=None):
+    s = start_daemon(s or load_state())
+    url = resolve_pls(station["url"])
+    ipc("loadfile", url, "replace")
+    ipc("set_property", "pause", False)
+    s["station"] = station["id"]
+    s["ducked"] = False
+    s["preduck"] = None
+    save_state(s)
+    return s
+
+
+def step(delta):
+    s = load_state()
+    order = order_ids(s)
+    cur = s.get("station")
+    idx = order.index(cur) if cur in order else -1
+    nxt = order[(idx + delta) % len(order)]
+    st = find_station(nxt) or stations()[0]
+    play(st, s)
+    return st
+
+
+def now_playing():
+    """Current track from ICY metadata, or None if it has not arrived yet.
+
+    Right after a station switch mpv falls back to the URL basename for
+    media-title, which is not a track name - suppress that.
+    """
+    try:
+        path = ipc("get_property", "path") or ""
+    except Exception:
+        path = ""
+    placeholder = path.rstrip("/").rsplit("/", 1)[-1].lower()
+    for prop in ("metadata/by-key/icy-title", "media-title"):
+        try:
+            v = ipc("get_property", prop)
+        except Exception:
+            continue
+        if not v or not isinstance(v, str):
+            continue
+        v = v.strip()
+        if not v or v.startswith("http") or v.lower() == placeholder:
+            continue
+        return v
+    return None
+
+
+def set_volume(vol, s=None):
+    s = s or load_state()
+    vol = max(0, min(VOL_MAX, int(vol)))
+    try:
+        ipc("set_property", "volume", vol)
+    except NotRunning:
+        pass
+    s["volume"] = vol
+    save_state(s)
+    return vol
+
+
+# --------------------------------------------------------------------------
+# output
+# --------------------------------------------------------------------------
+
+def die(msg):
+    sys.stderr.write("ccradio: %s\n" % msg)
+    sys.exit(1)
+
+
+def say(msg):
+    sys.stdout.write(msg + "\n")
+
+
+def describe(s=None):
+    s = s or load_state()
+    st = find_station(s["station"]) if s.get("station") else None
+    if not alive():
+        return "stopped"
+    bits = []
+    try:
+        paused = ipc("get_property", "pause")
+    except Exception:
+        paused = False
+    bits.append("paused" if paused else "playing")
+    if st:
+        bits.append(st["name"])
+    track = now_playing()
+    if track:
+        bits.append(track)
+    # Report mpv's real volume, not the stored setting - they differ while ducked.
+    try:
+        vol = int(ipc("get_property", "volume"))
+    except Exception:
+        vol = s["volume"]
+    bits.append("vol %d%s" % (vol, " (ducked)" if s.get("ducked") else ""))
+    return "  |  ".join(bits)
+
+
+# --------------------------------------------------------------------------
+# search
+# --------------------------------------------------------------------------
+
+def rb_server():
+    try:
+        req = urllib.request.Request(
+            "https://all.api.radio-browser.info/json/servers",
+            headers={"User-Agent": UA})
+        servers = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        names = sorted({s["name"] for s in servers if s.get("name")})
+        if names:
+            return random.choice(names)
+    except Exception:
+        pass
+    return "de1.api.radio-browser.info"
+
+
+def search(term, limit=20):
+    host = rb_server()
+    q = urllib.parse.urlencode(
+        {"name": term, "limit": limit, "hidebroken": "true", "order": "clickcount",
+         "reverse": "true"})
+    url = "https://%s/json/stations/search?%s" % (host, q)
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    return json.loads(urllib.request.urlopen(req, timeout=15).read())
+
+
+def save_found(results):
+    """Stash search hits so `ccradio play <n>` can reach them."""
+    with open(os.path.join(state_dir(), "found.json"), "w") as fh:
+        json.dump(results, fh)
+
+
+def load_found():
+    try:
+        with open(os.path.join(state_dir(), "found.json")) as fh:
+            return json.load(fh)
+    except Exception:
+        return []
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+def cmd_play(args):
+    s = load_state()
+    if args:
+        key = " ".join(args)
+        if key.isdigit():
+            found = load_found()
+            i = int(key) - 1
+            if not (0 <= i < len(found)):
+                die("no search result %s - run: ccradio search <term>" % key)
+            r = found[i]
+            st = {"id": "rb-" + r["stationuuid"][:8], "name": r["name"].strip(),
+                  "genre": r.get("tags", ""), "url": r.get("url_resolved") or r["url"],
+                  "source": "Radio Browser"}
+        else:
+            st = find_station(key)
+            if not st:
+                die("no station matching '%s' - try: ccradio stations" % key)
+    else:
+        st = find_station(s["station"]) if s.get("station") else stations()[0]
+    play(st, s)
+    say("> %s  (%s)" % (st["name"], st.get("genre") or st.get("source", "")))
+
+
+def cmd_next(_):
+    st = step(1)
+    say("> %s  (%s)" % (st["name"], st.get("genre", "")))
+
+
+def cmd_prev(_):
+    st = step(-1)
+    say("> %s  (%s)" % (st["name"], st.get("genre", "")))
+
+
+def cmd_shuffle(_):
+    s = load_state()
+    order = order_ids(s)
+    random.shuffle(order)
+    s["order"] = order
+    s["shuffle"] = True
+    save_state(s)
+    st = find_station(order[0])
+    play(st, s)
+    say("~ shuffled %d stations" % len(order))
+    say("> %s  (%s)" % (st["name"], st.get("genre", "")))
+
+
+def cmd_pause(_):
+    if not alive():
+        die("not playing - run: ccradio play")
+    ipc("cycle", "pause")
+    paused = ipc("get_property", "pause")
+    say("|| paused" if paused else "> resumed")
+
+
+def cmd_vol(args):
+    s = load_state()
+    if not args:
+        say("vol %d" % s["volume"])
+        return
+    a = args[0].lower()
+    if a in ("up", "+"):
+        v = set_volume(s["volume"] + VOL_STEP, s)
+    elif a in ("down", "-"):
+        v = set_volume(s["volume"] - VOL_STEP, s)
+    elif a.lstrip("-").isdigit():
+        v = set_volume(int(a), s)
+    else:
+        die("usage: ccradio vol [up|down|<0-%d>]" % VOL_MAX)
+    say("vol %d" % v)
+
+
+def cmd_now(_):
+    if not alive():
+        die("not playing - run: ccradio play")
+    track = now_playing()
+    st = find_station(load_state().get("station"))
+    say("%s%s" % (track or "(no track metadata)",
+                  "  --  %s" % st["name"] if st else ""))
+
+
+def cmd_status(_):
+    say(describe())
+
+
+def cmd_stations(_):
+    s = load_state()
+    cur = s.get("station")
+    for st in stations():
+        mark = "*" if st["id"] == cur else " "
+        say("%s %-22s %-26s %s" % (mark, st["id"], st["name"], st.get("genre", "")))
+
+
+def cmd_search(args):
+    if not args:
+        die("usage: ccradio search <term>")
+    res = search(" ".join(args))
+    if not res:
+        say("no stations found")
+        return
+    save_found(res)
+    for i, r in enumerate(res, 1):
+        say("%2d. %-34s %-8s %-6s %s" % (
+            i, r["name"].strip()[:34], (r.get("countrycode") or "")[:8],
+            "%skbps" % r.get("bitrate", "?"), (r.get("tags") or "")[:36]))
+    say("\nplay one with: ccradio play <number>")
+
+
+def cmd_start(_):
+    start_daemon()
+    say("daemon up")
+
+
+def cmd_stop(_):
+    stop_daemon()
+    say("stopped")
+
+
+def cmd_duck(_):
+    """Hook entry point: drop volume while Claude waits on the user."""
+    s = load_state()
+    if s.get("ducked") or not alive():
+        return
+    s["preduck"] = s["volume"]
+    target = max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO))
+    try:
+        ipc("set_property", "volume", target)
+    except Exception:
+        return
+    s["ducked"] = True
+    save_state(s)
+
+
+def cmd_unduck(_):
+    s = load_state()
+    if not s.get("ducked"):
+        return
+    try:
+        ipc("set_property", "volume", s.get("preduck") or s["volume"])
+    except Exception:
+        pass
+    s["ducked"] = False
+    s["preduck"] = None
+    save_state(s)
+
+
+def cmd_session(args):
+    """Refcount live Claude Code sessions so one closing window keeps the music."""
+    s = load_state()
+    delta = 1 if (args and args[0] == "start") else -1
+    s["sessions"] = max(0, s.get("sessions", 0) + delta)
+    save_state(s)
+    if delta < 0 and s["sessions"] == 0:
+        stop_daemon()
+
+
+COMMANDS = {
+    "play": cmd_play, "next": cmd_next, "prev": cmd_prev, "previous": cmd_prev,
+    "shuffle": cmd_shuffle, "pause": cmd_pause, "resume": cmd_pause,
+    "vol": cmd_vol, "volume": cmd_vol, "now": cmd_now, "status": cmd_status,
+    "stations": cmd_stations, "list": cmd_stations, "search": cmd_search,
+    "start": cmd_start, "stop": cmd_stop,
+    "duck": cmd_duck, "unduck": cmd_unduck, "session": cmd_session,
+}
+
+USAGE = """ccradio - internet radio while Claude works
+
+  play [station|N]   start, or switch to a station (N = search result)
+  next / prev        move one station along
+  shuffle            reshuffle the station order
+  pause              pause or resume
+  vol up|down|<n>    volume, 0-130 (mpv only, never system volume)
+  now                current track
+  status             what's playing right now
+  stations           list built-in stations
+  search <term>      find more via Radio Browser
+  stop               stop playback and the daemon
+"""
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        sys.stdout.write(USAGE)
+        return 0
+    cmd = argv[0].lower()
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        die("unknown command '%s'. Try: ccradio help" % cmd)
+    try:
+        fn(argv[1:])
+    except NotRunning:
+        die("radio is not running - run: ccradio play")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
