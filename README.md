@@ -115,28 +115,6 @@ Run them instantly with `!ccradio next` in the Claude Code prompt. That costs no
 tokens. Use `/ccradio:radio` instead if you want plain English, such as "put on
 something ambient".
 
-## Status line
-
-```
-⚙ Opus 5  |  ♪ Groove Salad · Jens Buchert - Lakelectric
-```
-
-Point Claude Code at the wrapper:
-
-```jsonc
-// ~/.claude/settings.json
-"statusLine": { "type": "command",
-                "command": "/path/to/cc-radio/bin/ccradio-statusline" }
-```
-
-If you already have a status line, put its command in
-`~/.config/ccradio/base-statusline`. The wrapper runs yours first, then appends
-the radio. Claude Code launches the status line without a shell, so an
-environment variable in `settings.json` never reaches it. Use the file instead.
-
-To print just the radio segment, run `ccradio statusline`. It prints nothing when
-the radio is off.
-
 ## Diagnose a silent radio
 
 Hooks run detached with their output discarded, which is right for not
@@ -216,6 +194,18 @@ stream.
 
 Volume is mpv's own software volume. It never touches your system volume, so
 turning the radio down doesn't quiet your calls or notifications.
+
+## Status line
+
+Optional. Shows the current track, and nothing when the radio is off:
+
+```
+⚙ Opus 5  |  ♪ Groove Salad · Jens Buchert - Lakelectric
+```
+
+Point `statusLine.command` in `~/.claude/settings.json` at
+`bin/ccradio-statusline`. To keep a status line you already have, put its command
+in `~/.config/ccradio/base-statusline`.
 
 ## Tune cc-radio
 
