@@ -5,6 +5,8 @@ All state lives outside the calling process, so playback survives between
 Claude Code turns and across sessions.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import random
@@ -67,6 +69,8 @@ def state_path():
 DEFAULT_STATE = {
     "station": None, "order": [], "volume": 70, "shuffle": False,
     "ducked": False, "preduck": None, "pid": None,
+    # manual - you started this yourself, so the hooks must not stop it
+    "manual": False,
 }
 
 
@@ -282,6 +286,7 @@ def play(station, s=None):
     s["station"] = station["id"]
     s["ducked"] = False
     s["preduck"] = None
+    s["manual"] = True
     save_state(s)
     return s
 
@@ -351,6 +356,10 @@ def describe(s=None):
     s = s or load_state()
     st = find_station(s["station"]) if s.get("station") else None
     if not alive():
+        if not shutil.which("mpv"):
+            return ("mpv is not installed - no audio. Install it with: %s"
+                    % ("brew install mpv" if sys.platform == "darwin"
+                       else "sudo apt install mpv"))
         return "stopped"
     bits = []
     try:
@@ -558,6 +567,9 @@ def cmd_start(_):
 
 
 def cmd_stop(_):
+    s = load_state()
+    s["manual"] = False
+    save_state(s)
     stop_daemon()
     say("stopped")
 
@@ -610,6 +622,25 @@ def working_path():
     return os.path.join(state_dir(), "working.json")
 
 
+@contextlib.contextmanager
+def locked():
+    """Serialise read-modify-write across tabs.
+
+    Without this, two tabs arming at the same instant both read the old set
+    and one write is lost - leaving a tab that is working but invisible, so
+    the music stops while it is still going.
+    """
+    fh = open(os.path.join(state_dir(), "lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
 def read_working():
     """Map of session_id -> when it started working, minus stale entries."""
     try:
@@ -655,27 +686,35 @@ def cmd_arm(_):
     START_DELAY first, so a quick answer stays silent.
     """
     sid = session_id()
-    w = read_working()
-    was_idle = not w
-    w[sid] = time.time()
-    write_working(w)
+    with locked():
+        w = read_working()
+        was_idle = not w
+        w[sid] = time.time()
+        write_working(w)
+    # You just sent a prompt, so you are back: undo any duck we applied.
+    cmd_unduck([])
     if not was_idle:
         return                       # music already going for another tab
     if os.fork() != 0:
         return                       # parent returns to the hook at once
     os.setsid()
     time.sleep(START_DELAY)
-    if sid not in read_working():
-        os._exit(0)                  # this tab finished - stay quiet
     try:
-        if not ipc("get_property", "idle-active"):
-            os._exit(0)              # a station is already loaded - don't stomp it
-    except Exception:
-        pass                         # no daemon yet - ours to start
-    try:
-        s = load_state()
-        pool = [x for x in stations() if x["id"] != s.get("station")] or stations()
-        play(random.choice(pool), s)
+        with locked():               # one starter at a time, or we spawn two mpvs
+            if sid not in read_working():
+                os._exit(0)          # this tab finished - stay quiet
+            try:
+                if not ipc("get_property", "idle-active"):
+                    os._exit(0)      # a station is already loaded - don't stomp it
+            except Exception:
+                pass                 # no daemon yet - ours to start
+            s = load_state()
+            pool = [x for x in stations() if x["id"] != s.get("station")] or stations()
+            s = play(random.choice(pool), s)
+            s["manual"] = False      # the hooks started this, so the hooks may stop it
+            save_state(s)
+    except SystemExit:
+        raise
     except Exception:
         pass
     os._exit(0)
@@ -684,11 +723,14 @@ def cmd_arm(_):
 def cmd_disarm(_):
     """Stop / SessionEnd: this tab finished. Silence only when ALL tabs are done."""
     sid = session_id()
-    w = read_working()
-    w.pop(sid, None)
-    write_working(w)
+    with locked():
+        w = read_working()
+        w.pop(sid, None)
+        write_working(w)
     if w:
         return                       # another tab is still working - keep playing
+    if load_state().get("manual"):
+        return                       # you put this on yourself - not ours to stop
     stop_daemon()
 
 

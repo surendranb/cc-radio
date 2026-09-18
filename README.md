@@ -60,7 +60,13 @@ So silence always means *nothing is working anywhere*, which is the only way the
 signal stays honest. `ccradio working` shows which tabs are busy right now.
 
 A tab that dies without reporting in is forgotten after 2 hours, so a crash can
-never wedge the music on forever.
+never wedge the music on forever. Tabs coordinate through a file lock, so two
+tabs starting at the same instant can't lose each other or start two players.
+
+## Music you start yourself
+
+`ccradio play` marks the radio as yours. The hooks won't stop it when I finish a
+task — only `ccradio stop` will. Music the hooks started, the hooks still stop.
 
 ## Subagents
 

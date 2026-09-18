@@ -348,6 +348,95 @@ class TestDuckSignal(Base):
         self.assertFalse(self.cc.load_state()["ducked"])
 
 
+class TestAuditRegressions(Base):
+    """Every bug found in the pre-release audit gets a test."""
+
+    def _as(self, sid, fn):
+        import io
+        real, sys.stdin = sys.stdin, io.StringIO('{"session_id":"%s"}' % sid)
+        try:
+            sys.stdin.isatty = lambda: False
+            fn([])
+        finally:
+            sys.stdin = real
+
+    # --- bug 1: duck had no path back; music stayed at 25% forever ---
+    def test_sending_a_prompt_undoes_a_duck(self):
+        m = self.start_mpv(volume=80.0)
+        s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
+        self.cc.write_working({"tab-A": time.time()})
+        self._as("tab-A", self.cc.cmd_duck)
+        self.assertEqual(m.props["volume"], 20)
+        self._as("tab-A", self.cc.cmd_arm)
+        self.assertEqual(m.props["volume"], 80, "your next prompt must restore the volume")
+        self.assertFalse(self.cc.load_state()["ducked"])
+
+    def test_every_hook_action_is_wired(self):
+        """unduck was defined but no hook called it. Catch that class of hole."""
+        import json as _j, re
+        hooks = _j.load(open(os.path.join(ROOT, "hooks", "hooks.json")))["hooks"]
+        called = {v[0]["hooks"][0]["command"].rsplit('"', 1)[-1].strip().split()[0]
+                  for v in hooks.values()}
+        self.assertEqual(called, {"arm", "disarm", "duck"},
+                         "hook wiring changed - is every action still reachable?")
+
+    # --- bug 2: concurrent tabs lost writes to the working set ---
+    def test_concurrent_arms_do_not_lose_tabs(self):
+        import subprocess
+        env = dict(os.environ, CCRADIO_STATE_DIR=self.tmp, CCRADIO_SOCK=self.sock)
+        exe = os.path.join(ROOT, "bin", "ccradio")
+        procs = [subprocess.Popen([exe, "arm"], stdin=subprocess.PIPE, env=env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                 for _ in range(12)]
+        for i, p in enumerate(procs):
+            p.communicate(('{"session_id":"tab-%d"}' % i).encode())
+        self.assertEqual(len(self.cc.read_working()), 12,
+                         "a tab lost here is a tab that works while the music is off")
+
+    def test_concurrent_disarms_drain_the_set(self):
+        import subprocess
+        self.cc.write_working({"tab-%d" % i: time.time() for i in range(12)})
+        env = dict(os.environ, CCRADIO_STATE_DIR=self.tmp, CCRADIO_SOCK=self.sock)
+        exe = os.path.join(ROOT, "bin", "ccradio")
+        procs = [subprocess.Popen([exe, "disarm"], stdin=subprocess.PIPE, env=env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                 for _ in range(12)]
+        for i, p in enumerate(procs):
+            p.communicate(('{"session_id":"tab-%d"}' % i).encode())
+        self.assertEqual(self.cc.read_working(), {},
+                         "a stuck entry keeps the music on after everything finished")
+
+    # --- bug 3: the hooks stopped music the user had started by hand ---
+    def test_hooks_do_not_stop_music_you_started(self):
+        m = self.start_mpv()
+        self.cc.play(self.cc.find_station("soma-groovesalad"))
+        self.assertTrue(self.cc.load_state()["manual"])
+        self._as("tab-A", self.cc.cmd_disarm)
+        self.assertNotIn(["quit"], m.seen, "your own music must survive my Stop hook")
+
+    def test_hooks_do_stop_music_they_started(self):
+        m = self.start_mpv()
+        self.cc.play(self.cc.find_station("soma-groovesalad"))
+        s = self.cc.load_state(); s["manual"] = False; self.cc.save_state(s)
+        self._as("tab-A", self.cc.cmd_disarm)
+        self.assertIn(["quit"], m.seen)
+
+    def test_manual_stop_clears_ownership(self):
+        self.start_mpv()
+        self.cc.play(self.cc.find_station("soma-groovesalad"))
+        self.cc.cmd_stop([])
+        self.assertFalse(self.cc.load_state()["manual"])
+
+    # --- bug 4: silent no-op when mpv is missing ---
+    def test_missing_mpv_is_reported_not_silent(self):
+        real = self.cc.shutil.which
+        self.cc.shutil.which = lambda n: None
+        try:
+            self.assertIn("mpv is not installed", self.cc.describe())
+        finally:
+            self.cc.shutil.which = real
+
+
 class TestPlaylistResolution(Base):
     def test_direct_stream_url_passes_through_untouched(self):
         u = "https://ice2.somafm.com/groovesalad-256-mp3"
