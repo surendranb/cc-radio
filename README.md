@@ -108,9 +108,21 @@ Run them instantly with `!ccradio next` in the Claude Code prompt, or via
 ⚙ Opus 5  |  ♪ Groove Salad · Jens Buchert - Lakelectric
 ```
 
-`ccradio statusline` prints one segment, or nothing when the radio is off.
-Already have a statusline? `bin/ccradio-statusline` runs yours first and appends
-the radio — point it at your existing command with `CCRADIO_BASE_STATUSLINE`.
+Point Claude Code at the wrapper:
+
+```jsonc
+// ~/.claude/settings.json
+"statusLine": { "type": "command",
+                "command": "/path/to/cc-radio/bin/ccradio-statusline" }
+```
+
+Already have a statusline? Put its command in
+`~/.config/ccradio/base-statusline` and the wrapper runs yours first, then
+appends the radio. Claude Code launches the statusline without a shell, so an
+env var in `settings.json` never reaches it — the file is the way.
+
+`ccradio statusline` alone prints just the radio segment, or nothing when it's
+off.
 
 ## Stations
 

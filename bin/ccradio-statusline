@@ -1,14 +1,21 @@
 #!/bin/sh
-# Claude Code statusline wrapper: runs your existing statusline command, then
-# appends the radio segment. Set YOUR_STATUSLINE to whatever you had before.
+# Claude Code statusline: your existing statusline, with the radio appended.
 #
 #   "statusLine": { "type": "command",
-#                   "command": "/path/to/ccradio-statusline", "padding": 0 }
-# Your existing statusline command, if you have one. Leave empty for radio only.
-YOUR_STATUSLINE="${CCRADIO_BASE_STATUSLINE:-}"
+#                   "command": "/path/to/cc-radio/bin/ccradio-statusline" }
+#
+# To keep a statusline you already had, put its command in:
+#   ~/.config/ccradio/base-statusline
+# Claude Code runs this without a shell, so an env var in settings.json will
+# not reach us - the file is the way.
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+BASE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ccradio/base-statusline"
+YOUR_STATUSLINE="${CCRADIO_BASE_STATUSLINE:-}"
+if [ -z "$YOUR_STATUSLINE" ] && [ -r "$BASE_FILE" ]; then
+  YOUR_STATUSLINE="$(cat "$BASE_FILE")"
+fi
 
-payload="$(cat)"                      # statusline JSON arrives on stdin, read once
+payload="$(cat)"
 if [ -n "$YOUR_STATUSLINE" ]; then
   base="$(printf '%s' "$payload" | sh -c "$YOUR_STATUSLINE" 2>/dev/null)"
 else
