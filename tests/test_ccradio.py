@@ -436,6 +436,42 @@ class TestDuckSignal(Base):
         self.cc.cmd_unduck([])
         self.assertEqual(m.props["volume"], 80)
 
+    def test_stale_duck_flag_does_not_swallow_a_real_duck(self):
+        """A leftover ducked=True used to make the next duck a no-op."""
+        m = self.start_mpv(volume=70.0)
+        s = self.cc.load_state(); s["volume"] = 70
+        s["ducked"] = True; s["preduck"] = 70          # stale from a dead daemon
+        self.cc.save_state(s)
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
+        self.assertEqual(m.props["volume"], 17, "the duck must still happen")
+
+    def test_stale_duck_flag_clears_when_no_daemon_is_up(self):
+        s = self.cc.load_state()
+        s["ducked"] = True; s["preduck"] = 70
+        self.cc.save_state(s)
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)            # no daemon running
+        self.assertFalse(self.cc.load_state()["ducked"],
+                         "a dead daemon must not leave the flag wedged on")
+
+    def test_duck_is_idempotent_when_genuinely_ducked(self):
+        m = self.start_mpv(volume=80.0)
+        s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
+        self._as("tab-A", self.cc.cmd_duck)
+        self.cc.cmd_unduck([])
+        self.assertEqual(m.props["volume"], 80, "two ducks must not stack")
+
+    def test_only_one_definition_of_each_hook_command(self):
+        """A duplicate definition silently shadows the real one."""
+        import re
+        src = open(os.path.join(ROOT, "bin", "ccradio")).read()
+        for name in ("cmd_duck", "cmd_unduck", "cmd_arm", "cmd_disarm"):
+            n = len(re.findall(r"^def %s\(" % name, src, re.M))
+            self.assertEqual(n, 1, "%s defined %d times" % (name, n))
+
     def test_duck_without_daemon_is_harmless(self):
         self._tab_is_working("tab-A")
         self._as("tab-A", self.cc.cmd_duck)

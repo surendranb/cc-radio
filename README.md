@@ -1,111 +1,120 @@
 # cc-radio
 
-**Music that plays while Claude Code is working, so you know by ear when it's done.**
+Music that plays while Claude Code is working, so you know by ear when it's done.
 
-Not background ambiance you switch on. The music *is* the progress indicator.
+The music isn't background ambiance you switch on. It's the progress indicator.
 
 ```
 you send a deep problem   ──►  ...6 seconds of real work...  ──►  ♪ music starts
 Claude needs your input   ──►  music ducks
 Claude finishes           ──►  silence
-Claude goes on another tear ──►  ♪ different station
+Claude starts again       ──►  ♪ a different station
 ```
 
 A quick two-second answer stays silent. Only real work earns a soundtrack.
 
-## Install
+## Install cc-radio
 
-Needs `mpv`. That is the only dependency.
+cc-radio needs [mpv](https://mpv.io). That's the only dependency.
 
 ```sh
 brew install mpv          # macOS
-sudo apt install mpv      # Debian/Ubuntu
+sudo apt install mpv      # Debian, Ubuntu
+```
 
+Then add the marketplace and install the plugin:
+
+```sh
 claude plugin marketplace add surendranb/cc-radio
 claude plugin install ccradio@cc-radio
 ```
 
-Restart Claude Code. That's it — there is nothing to turn on.
+Restart Claude Code. There's nothing to turn on.
 
 ## How it works
 
-Five hooks, one script. No configuration.
+Five hooks and one script. No configuration.
 
-| Hook | What it means | What happens |
+| Hook | What it means | What cc-radio does |
 |---|---|---|
-| `UserPromptSubmit` | Claude starts working | Arms a timer. After 6s of real work, music starts on a random station |
-| `Stop` | Claude finished | Music stops |
-| `Notification` | Claude needs your attention | Volume ducks to 25% |
-| `PermissionRequest` | Claude is asking permission | Volume ducks |
-| `SessionEnd` | You closed the window | Music stops |
+| `UserPromptSubmit` | Claude starts working | Arms a timer, then starts music on a random station after 6 seconds. Also lifts any duck |
+| `Stop` | Claude finishes | Stops the music |
+| `Notification` | Claude needs your attention | Ducks the volume to 25% |
+| `PermissionRequest` | Claude asks permission | Ducks the volume |
+| `SessionEnd` | You close the window | Stops the music |
 
-The 6-second delay is the whole trick. Without it every "yes" and "thanks"
+The six-second delay does the real work. Without it, every "yes" and "thanks"
 triggers a burst of noise. With it, silence means done and music means working.
 
-A different station each time, so a long session doesn't loop the same track bed.
+Each run picks a different station, so a long session doesn't loop the same
+track bed.
 
-## Many tabs open?
+## Multiple tabs
 
 One machine, one pair of speakers, one radio. cc-radio tracks which tabs are
 working, keyed by Claude Code's `session_id`:
 
-| | |
+| When | What happens |
 |---|---|
-| **Music starts** | when the *first* tab starts working |
-| **A second tab joins** | keeps playing — it does not change the station mid-song |
-| **One tab finishes** | music keeps playing, because another tab is still working |
-| **The last tab finishes** | silence |
+| The first tab starts working | Music starts |
+| A second tab joins | Music continues on the same station |
+| One tab finishes | Music continues, because another tab is still working |
+| The last tab finishes | Silence |
 
-So silence always means *nothing is working anywhere*, which is the only way the
-signal stays honest. `ccradio working` shows which tabs are busy right now.
+Silence always means nothing is working anywhere. That's the only way the signal
+stays honest. To see which tabs are busy, run `ccradio working`.
 
-A tab that dies without reporting in is forgotten after 2 hours, so a crash can
-never wedge the music on forever. Tabs coordinate through a file lock, so two
-tabs starting at the same instant can't lose each other or start two players.
-
-## Music you start yourself
-
-`ccradio play` marks the radio as yours. The hooks won't stop it when I finish a
-task — only `ccradio stop` will. Music the hooks started, the hooks still stop.
+cc-radio forgets a tab that dies without reporting in after two hours, so a crash
+can't leave the music running forever. Tabs coordinate through a file lock, so
+two tabs that start at the same instant can't lose each other or start two
+players.
 
 ## Subagents
 
-Subagents run under their own `session_id` and never submit a prompt of their
-own, so they never start or stop the music. The tab that spawned them is still
-the thing being tracked.
+Subagents run under their own `session_id` and never submit a prompt, so they
+never start or stop the music. cc-radio tracks the tab that spawned them.
 
-They do emit their own idle notifications. Those are ignored — cc-radio only
-ducks for a session it knows is working, so a subagent finishing can't dip your
-music at random.
+Subagents do emit their own idle notifications. cc-radio ignores those, because
+it only ducks for a session it knows is working. A subagent finishing can't dip
+your music at random.
 
 Background task completions arrive in the parent tab as a normal prompt, so a
-long chain of agent work keeps the music going rather than cutting out between
+long chain of agent work keeps the music going instead of cutting out between
 steps.
 
-## Controls (optional)
+## Music you start yourself
 
-You never need these — the hooks do everything. They exist for when you want them:
+`ccradio play` marks the radio as yours. The hooks don't stop music you started
+by hand — only `ccradio stop` does. Music the hooks started, the hooks still
+stop.
+
+## Controls
+
+You never need these. The hooks do everything. They're here for when you want
+them:
 
 ```
 ccradio play [station]     pick a station by hand
 ccradio next / prev        move one station along
 ccradio shuffle            reshuffle the order
 ccradio pause              pause or resume
-ccradio vol up|down|<n>    volume 0-130 (mpv only, never system volume)
+ccradio vol up|down|<n>    volume 0-130, mpv only, never your system volume
 ccradio now                current track
 ccradio status             what's playing
 ccradio stations           list the stations in play
 ccradio genre lofi         play a genre, and keep the automatic music in it
-ccradio language tamil     same, by language
-ccradio genre off          back to the built-ins
-ccradio search <term>      find more via Radio Browser
+ccradio language tamil     the same, by language
+ccradio genre off          go back to the built-ins
+ccradio working            which tabs are working right now
+ccradio search <term>      find more through Radio Browser
 ccradio stop               stop everything
 ```
 
-Run them instantly with `!ccradio next` in the Claude Code prompt, or via
-`/ccradio:radio` if you want plain English ("put on something ambient").
+Run them instantly with `!ccradio next` in the Claude Code prompt. That costs no
+tokens. Use `/ccradio:radio` instead if you want plain English, such as "put on
+something ambient".
 
-## Statusline (optional)
+## Status line
 
 ```
 ⚙ Opus 5  |  ♪ Groove Salad · Jens Buchert - Lakelectric
@@ -119,74 +128,85 @@ Point Claude Code at the wrapper:
                 "command": "/path/to/cc-radio/bin/ccradio-statusline" }
 ```
 
-Already have a statusline? Put its command in
-`~/.config/ccradio/base-statusline` and the wrapper runs yours first, then
-appends the radio. Claude Code launches the statusline without a shell, so an
-env var in `settings.json` never reaches it — the file is the way.
+If you already have a status line, put its command in
+`~/.config/ccradio/base-statusline`. The wrapper runs yours first, then appends
+the radio. Claude Code launches the status line without a shell, so an
+environment variable in `settings.json` never reaches it. Use the file instead.
 
-`ccradio statusline` alone prints just the radio segment, or nothing when it's
-off.
+To print just the radio segment, run `ccradio statusline`. It prints nothing when
+the radio is off.
 
 ## Stations
 
-17 built in, all commercial-free and listener-supported:
+cc-radio ships 17 stations, all commercial-free and listener-supported:
 
-- **SomaFM** (12) — Groove Salad, Drone Zone, DEF CON Radio, Lush, Space Station,
-  Beat Blender, Fluid, Deep Space One, Secret Agent, Boot Liquor, Sonic Universe, ThistleRadio
-- **Radio Paradise** (4) — Main, Mellow, Rock, Global
-- **Nightwave Plaza** (1) — vaporwave
+- **[SomaFM](https://somafm.com)** (12) — Groove Salad, Drone Zone, DEF CON
+  Radio, Lush, Space Station, Beat Blender, Fluid, Deep Space One, Secret Agent,
+  Boot Liquor, Sonic Universe, ThistleRadio
+- **[Radio Paradise](https://radioparadise.com)** (4) — Main, Mellow, Rock,
+  Global
+- **[Nightwave Plaza](https://plaza.one)** (1) — vaporwave
 
-`ccradio search <term>` reaches the [Radio Browser](https://www.radio-browser.info/)
-directory for anything else. No API key.
+### Pick a genre or a language
 
-### Pick a genre, or a language
-
-The built-ins are all ambient and electronic. Good for focus, but it is one mood,
-and not everyone writes code to Drone Zone.
+The built-in stations are all ambient and electronic. That suits focus, but it's
+one mood, and not everyone writes code to Drone Zone.
 
 ```sh
-ccradio genre lofi          # or jazz, classical, metal, carnatic, ghazal ...
-ccradio language tamil      # or hindi, malayalam, japanese, french ...
-ccradio genre               # what is playing, and some tags worth trying
+ccradio genre lofi          # or jazz, classical, metal, carnatic, ghazal
+ccradio language tamil      # or hindi, malayalam, japanese, french
+ccradio genre               # what's playing, and tags worth trying
 ccradio genre off           # back to the 17 built-ins
 ```
 
-This sticks. The pick becomes the pool the *automatic* music draws from, so every
-station Claude puts on while it works stays inside it until you clear it. Around
-30 stations per pick, ordered by how much the directory's listeners play them.
+A pick sticks. It becomes the pool the automatic music draws from, so every
+station Claude puts on stays inside it until you clear it. Each pick fetches
+about 30 stations, ordered by how much the directory's listeners play them.
 
-Anything Radio Browser tags works, not just the suggested list.
+Any tag [Radio Browser](https://www.radio-browser.info/) knows works, not just
+the suggested ones. There's no API key.
 
-**On "free and open source":** these stations are free to listen to and ad-free.
-The *music* on them is commercially licensed — not open-source or Creative
-Commons. For strictly CC or public-domain audio, look at Free Music Archive,
-ccMixter, and Musopen.
+### A note on "free and open source"
 
-## Why a daemon
+These stations are free to listen to and ad-free, but the music on them is
+commercially licensed. It isn't open source or Creative Commons. For strictly
+Creative Commons or public-domain audio, look at
+[Free Music Archive](https://freemusicarchive.org),
+[ccMixter](http://ccmixter.org), and [Musopen](https://musopen.org).
+
+## Why cc-radio runs a daemon
 
 Claude Code keeps no process alive between turns, so the player has to live
-outside it. mpv runs detached with a JSON IPC socket — the only common player
+outside it. mpv runs detached with a JSON IPC socket. It's the only common player
 that supports live pause, volume, and now-playing metadata without killing the
-stream. Volume is mpv's own software volume; it never touches your system volume.
+stream.
 
-## Tune it
+Volume is mpv's own software volume. It never touches your system volume, so
+turning the radio down doesn't quiet your calls or notifications.
 
-| Want | Change |
+## Tune cc-radio
+
+| To change | Edit |
 |---|---|
-| Music sooner or later | `START_DELAY` in `bin/ccradio` (default 6.0s) |
-| Quieter ducking | `DUCK_RATIO` (default 0.25) |
-| Your own stations | `stations/curated.json` |
-| A whole genre or language | `ccradio genre <tag>` / `ccradio language <name>` |
+| When the music starts | `START_DELAY` in `bin/ccradio`, default 6.0 seconds |
+| How far it ducks | `DUCK_RATIO`, default 0.25 |
+| The built-in stations | `stations/curated.json` |
 
 ## Develop
 
 ```sh
-python3 tests/test_ccradio.py    # 55 tests, no mpv/network/speakers needed
+python3 tests/test_ccradio.py    # 59 tests, no mpv, network, or speakers needed
 claude plugin validate .
 ```
 
+## Contributors
+
+- [@pavithramohan-netizen](https://github.com/pavithramohan-netizen) — genre and
+  language pools, and the duplicate-definition catch
+
 ## License
 
-MIT. Please support the stations you listen to —
+MIT. Please support the stations you listen to.
 [SomaFM](https://somafm.com/support/) and
-[Radio Paradise](https://radioparadise.com/support) both run on listener donations.
+[Radio Paradise](https://radioparadise.com/support) both run on listener
+donations.

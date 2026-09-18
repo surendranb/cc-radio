@@ -19,7 +19,7 @@ import time
 import urllib.parse
 import urllib.request
 
-UA = "cc-radio/0.1 (+https://github.com/cc-radio/cc-radio)"
+UA = "cc-radio/0.4 (+https://github.com/surendranb/cc-radio)"
 VOL_STEP = 10
 VOL_MAX = 130
 DUCK_FLOOR = 10
@@ -716,34 +716,6 @@ def cmd_stop(_):
     say("stopped")
 
 
-def cmd_duck(_):
-    """Hook entry point: drop volume while Claude waits on the user."""
-    s = load_state()
-    if s.get("ducked") or not alive():
-        return
-    s["preduck"] = s["volume"]
-    target = max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO))
-    try:
-        ipc("set_property", "volume", target)
-    except Exception:
-        return
-    s["ducked"] = True
-    save_state(s)
-
-
-def cmd_unduck(_):
-    s = load_state()
-    if not s.get("ducked"):
-        return
-    try:
-        ipc("set_property", "volume", s.get("preduck") or s["volume"])
-    except Exception:
-        pass
-    s["ducked"] = False
-    s["preduck"] = None
-    save_state(s)
-
-
 def is_playing():
     """True only if the daemon is up and not paused."""
     try:
@@ -897,11 +869,24 @@ def cmd_duck(_):
     if session_id() not in read_working():
         return
     s = load_state()
-    if s.get("ducked") or not alive():
+    if not alive():
+        # A daemon that died while ducked leaves the flag set. Clear it, or it
+        # swallows the next real duck and status reports a lie.
+        if s.get("ducked"):
+            s["ducked"], s["preduck"] = False, None
+            save_state(s)
         return
-    s["preduck"] = s["volume"]
     try:
-        ipc("set_property", "volume", max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO)))
+        current = int(ipc("get_property", "volume"))
+    except Exception:
+        return
+    target = max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO))
+    if s.get("ducked") and current <= target:
+        return                       # genuinely ducked already
+    # Trust mpv's volume, not the stored flag - the flag can go stale.
+    s["preduck"] = current
+    try:
+        ipc("set_property", "volume", target)
     except Exception:
         return
     s["ducked"] = True
