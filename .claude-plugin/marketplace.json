@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "radio",
+      "name": "ccradio",
       "source": "./",
       "description": "Ad-free internet radio while Claude works."
     }

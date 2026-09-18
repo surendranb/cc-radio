@@ -22,7 +22,7 @@ brew install mpv          # macOS
 sudo apt install mpv      # Debian/Ubuntu
 
 claude plugin marketplace add surendranb/cc-radio
-claude plugin install radio@cc-radio
+claude plugin install ccradio@cc-radio
 ```
 
 Restart Claude Code. That's it — there is nothing to turn on.
