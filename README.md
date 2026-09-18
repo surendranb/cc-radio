@@ -100,7 +100,7 @@ ccradio stop               stop everything
 ```
 
 Run them instantly with `!ccradio next` in the Claude Code prompt, or via
-`/radio next` if you want plain English ("put on something ambient").
+`/ccradio:radio` if you want plain English ("put on something ambient").
 
 ## Statusline (optional)
 
@@ -147,7 +147,7 @@ stream. Volume is mpv's own software volume; it never touches your system volume
 ## Develop
 
 ```sh
-python3 tests/test_ccradio.py    # 33 tests, no mpv/network/speakers needed
+python3 tests/test_ccradio.py    # 46 tests, no mpv/network/speakers needed
 claude plugin validate .
 ```
 
