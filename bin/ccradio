@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import random
+import re
 import shutil
 import socket
 import subprocess
@@ -95,6 +96,14 @@ def save_state(s):
 # --------------------------------------------------------------------------
 
 def stations():
+    """The station set in play: a genre/language pool if you picked one.
+
+    Everything reads its stations through here, so a pool covers the automatic
+    music too and not just a hand-played station.
+    """
+    pool = read_pool()
+    if pool:
+        return pool["stations"]
     try:
         with open(CURATED) as fh:
             st = json.load(fh)["stations"]
@@ -424,6 +433,86 @@ def load_found():
 
 
 # --------------------------------------------------------------------------
+# genre and language pools
+# --------------------------------------------------------------------------
+
+# Radio Browser tags worth suggesting. Not a whitelist - any tag it knows works.
+GENRE_PRESETS = (
+    "lofi", "jazz", "classical", "ambient", "electronic", "rock", "metal",
+    "hip hop", "blues", "funk", "soul", "reggae", "folk", "techno", "piano",
+    "bollywood", "carnatic", "ghazal",
+)
+
+
+def pool_path():
+    return os.path.join(state_dir(), "pool.json")
+
+
+def read_pool():
+    """The genre or language pool you picked, or None for the built-ins."""
+    try:
+        with open(pool_path()) as fh:
+            pool = json.load(fh)
+        if pool.get("stations"):
+            return pool
+    except Exception:
+        pass
+    return None
+
+
+def write_pool(label, sts):
+    tmp = pool_path() + ".%d.tmp" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump({"label": label, "stations": sts}, fh)
+    os.replace(tmp, pool_path())
+
+
+def drop_pool():
+    try:
+        os.unlink(pool_path())
+    except OSError:
+        pass
+
+
+def pool_id(name, taken):
+    """A readable id for a fetched station, unique within its own pool."""
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:20] or "station"
+    out, n = base, 2
+    while out in taken:
+        out, n = "%s-%d" % (base, n), n + 1
+    taken.add(out)
+    return out
+
+
+def as_station(rec, taken):
+    """Reshape a Radio Browser record into what stations() hands out."""
+    name = (rec.get("name") or "").strip() or "unnamed"
+    return {
+        "id": pool_id(name, taken),
+        "name": name,
+        "genre": (rec.get("tags") or "").replace(",", ", ")[:44],
+        "url": rec.get("url_resolved") or rec.get("url"),
+        "source": "Radio Browser",
+        "homepage": rec.get("homepage") or "",
+    }
+
+
+def rb_fetch(field, term, limit=30):
+    """Stations matching one Radio Browser field - 'tag' or 'language'."""
+    q = urllib.parse.urlencode(
+        {field: term, "limit": limit, "hidebroken": "true",
+         "order": "clickcount", "reverse": "true"})
+    url = "https://%s/json/stations/search?%s" % (rb_server(), q)
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    recs = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    taken, out = set(), []
+    for rec in recs:
+        if rec.get("url_resolved") or rec.get("url"):
+            out.append(as_station(rec, taken))
+    return out
+
+
+# --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
 
@@ -541,9 +630,15 @@ def cmd_statusline(args):
 def cmd_stations(_):
     s = load_state()
     cur = s.get("station")
+    pool = read_pool()
+    if pool:
+        kind = pool["label"].split(":", 1)[0]
+        say("%s - ccradio %s off for the built-ins\n" % (pool["label"], kind))
     for st in stations():
         mark = "*" if st["id"] == cur else " "
-        say("%s %-22s %-26s %s" % (mark, st["id"], st["name"], st.get("genre", "")))
+        # Clipped: a fetched pool carries names far longer than the built-ins.
+        say("%s %-22.22s %-26.26s %.34s" % (
+            mark, st["id"], st["name"], st.get("genre", "")))
 
 
 def cmd_search(args):
@@ -559,6 +654,53 @@ def cmd_search(args):
             i, r["name"].strip()[:34], (r.get("countrycode") or "")[:8],
             "%skbps" % r.get("bitrate", "?"), (r.get("tags") or "")[:36]))
     say("\nplay one with: ccradio play <number>")
+
+
+OFF_WORDS = ("off", "clear", "none", "reset", "default", "built-in", "builtin")
+
+
+def set_pool(field, word, args):
+    """Shared body of `ccradio genre` and `ccradio language`."""
+    term = " ".join(args).strip()
+    if not term:
+        pool = read_pool()
+        say("now playing from: %s" % (pool["label"] if pool else
+                                      "the built-in stations"))
+        if word == "genre":
+            say("\ntry one of: %s" % ", ".join(GENRE_PRESETS))
+            say("or any tag Radio Browser knows.")
+        else:
+            say("\nany language Radio Browser knows: tamil, hindi, malayalam,"
+                " telugu, french, japanese ...")
+        say("\n  ccradio %s <name>   switch to it" % word)
+        say("  ccradio %s off      back to the built-ins" % word)
+        return
+    if term.lower() in OFF_WORDS:
+        drop_pool()
+        s = load_state()
+        s["order"] = []
+        save_state(s)
+        say("back to the built-in stations")
+        return
+    sts = rb_fetch(field, term)
+    if not sts:
+        die("nothing found for %s '%s'. See: ccradio %s" % (word, term, word))
+    write_pool("%s: %s" % (word, term), sts)
+    s = load_state()
+    s["order"] = []
+    save_state(s)
+    say("%s: %s  (%d stations)" % (word, term, len(sts)))
+    play(random.choice(sts), s)
+
+
+def cmd_genre(args):
+    """Play a genre, and keep the automatic music inside it."""
+    set_pool("tag", "genre", args)
+
+
+def cmd_language(args):
+    """Play a language, and keep the automatic music inside it."""
+    set_pool("language", "language", args)
 
 
 def cmd_start(_):
@@ -784,6 +926,7 @@ COMMANDS = {
     "shuffle": cmd_shuffle, "pause": cmd_pause, "resume": cmd_pause,
     "vol": cmd_vol, "volume": cmd_vol, "now": cmd_now, "status": cmd_status,
     "stations": cmd_stations, "list": cmd_stations, "search": cmd_search,
+    "genre": cmd_genre, "language": cmd_language, "lang": cmd_language,
     "statusline": cmd_statusline,
     "start": cmd_start, "stop": cmd_stop,
     "duck": cmd_duck, "unduck": cmd_unduck,
@@ -801,7 +944,9 @@ USAGE = """ccradio - internet radio while Claude works
   status             what's playing right now
   working            which Claude Code tabs are working right now
   statusline         compact segment for the Claude Code statusline
-  stations           list built-in stations
+  stations           list the stations in play
+  genre [name|off]   play a genre, and keep the automatic music in it
+  language [name]    same, by language
   search <term>      find more via Radio Browser
   stop               stop playback and the daemon
 """

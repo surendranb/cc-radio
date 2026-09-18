@@ -130,6 +130,100 @@ class TestStations(Base):
         self.assertEqual(len(self.cc.stations()), len(self.cc.FALLBACK))
 
 
+class TestGenrePools(Base):
+    """A genre or language pool stands in for the built-in station list."""
+
+    POOL = [
+        {"id": "a-station", "name": "A Station", "genre": "lofi",
+         "url": "https://example.test/a.mp3", "source": "Radio Browser"},
+        {"id": "b-station", "name": "B Station", "genre": "lofi",
+         "url": "https://example.test/b.mp3", "source": "Radio Browser"},
+    ]
+
+    def _fake_fetch(self, sts):
+        self.cc.rb_fetch = lambda field, term, limit=30: list(sts)
+
+    def _quietly(self, fn, *a):
+        """Run a command without its chatter landing in the test output."""
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            fn(*a)
+
+    def test_pool_replaces_the_builtin_stations(self):
+        self.cc.write_pool("genre: lofi", self.POOL)
+        self.assertEqual([s["id"] for s in self.cc.stations()],
+                         ["a-station", "b-station"])
+
+    def test_corrupt_pool_falls_back_to_builtins(self):
+        with open(self.cc.pool_path(), "w") as fh:
+            fh.write("{not json")
+        self.assertGreaterEqual(len(self.cc.stations()), 10)
+
+    def test_empty_pool_falls_back_to_builtins(self):
+        self.cc.write_pool("genre: nothing", [])
+        self.assertGreaterEqual(len(self.cc.stations()), 10)
+
+    def test_ids_stay_unique_when_names_repeat(self):
+        taken = set()
+        ids = [self.cc.pool_id("Lofi Radio", taken) for _ in range(3)]
+        self.assertEqual(ids, ["lofi-radio", "lofi-radio-2", "lofi-radio-3"])
+
+    def test_resolved_url_wins_and_tags_become_genre(self):
+        st = self.cc.as_station(
+            {"name": " Chill FM ", "url": "https://example.test/redirect",
+             "url_resolved": "https://example.test/real.mp3", "tags": "lofi,chill"},
+            set())
+        self.assertEqual(st["url"], "https://example.test/real.mp3")
+        self.assertEqual(st["name"], "Chill FM")
+        self.assertEqual(st["genre"], "lofi, chill")
+
+    def test_off_restores_the_builtins(self):
+        self.cc.write_pool("genre: lofi", self.POOL)
+        self.assertEqual(len(self.cc.stations()), 2)
+        self._quietly(self.cc.cmd_genre, ["off"])
+        self.assertGreaterEqual(len(self.cc.stations()), 10)
+        self.assertIsNone(self.cc.read_pool())
+
+    def test_setting_a_genre_stores_the_pool_and_starts_playing(self):
+        self.start_mpv()
+        self._fake_fetch(self.POOL)
+        self._quietly(self.cc.cmd_genre, ["lofi"])
+        self.assertEqual(self.cc.read_pool()["label"], "genre: lofi")
+        played = [c[1] for c in self.mpv.seen if c and c[0] == "loadfile"]
+        self.assertEqual(len(played), 1)
+        self.assertIn(played[0], [s["url"] for s in self.POOL])
+
+    def test_language_pool_is_labelled_as_a_language(self):
+        self.start_mpv()
+        self._fake_fetch(self.POOL)
+        self._quietly(self.cc.cmd_language, ["tamil"])
+        self.assertEqual(self.cc.read_pool()["label"], "language: tamil")
+
+    def test_automatic_music_draws_from_the_pool(self):
+        """The point of a pool: the hook-driven music honours it too.
+
+        The pool is written directly rather than through cmd_genre, which
+        would play at once - and a loaded station makes cmd_arm bow out
+        before it ever picks one, so the test would prove nothing.
+        """
+        self.start_mpv()
+        self.cc.write_pool("genre: lofi", self.POOL)
+        self.cc.START_DELAY = 0.3
+        import io
+        real, sys.stdin = sys.stdin, io.StringIO('{"session_id":"tab-A"}')
+        try:
+            sys.stdin.isatty = lambda: False
+            self.cc.cmd_arm([])
+        finally:
+            sys.stdin = real
+        time.sleep(1.4)
+        played = [c[1] for c in self.mpv.seen if c and c[0] == "loadfile"]
+        self.assertTrue(played, "the hook never started anything")
+        for url in played:
+            self.assertIn(url, [s["url"] for s in self.POOL],
+                          "automatic music escaped the chosen pool")
+
+
 class TestOrder(Base):
     def test_order_repairs_when_stations_change_underneath(self):
         live = [s["id"] for s in self.cc.stations()]

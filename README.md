@@ -94,7 +94,10 @@ ccradio pause              pause or resume
 ccradio vol up|down|<n>    volume 0-130 (mpv only, never system volume)
 ccradio now                current track
 ccradio status             what's playing
-ccradio stations           list built-in stations
+ccradio stations           list the stations in play
+ccradio genre lofi         play a genre, and keep the automatic music in it
+ccradio language tamil     same, by language
+ccradio genre off          back to the built-ins
 ccradio search <term>      find more via Radio Browser
 ccradio stop               stop everything
 ```
@@ -136,6 +139,24 @@ off.
 `ccradio search <term>` reaches the [Radio Browser](https://www.radio-browser.info/)
 directory for anything else. No API key.
 
+### Pick a genre, or a language
+
+The built-ins are all ambient and electronic. Good for focus, but it is one mood,
+and not everyone writes code to Drone Zone.
+
+```sh
+ccradio genre lofi          # or jazz, classical, metal, carnatic, ghazal ...
+ccradio language tamil      # or hindi, malayalam, japanese, french ...
+ccradio genre               # what is playing, and some tags worth trying
+ccradio genre off           # back to the 17 built-ins
+```
+
+This sticks. The pick becomes the pool the *automatic* music draws from, so every
+station Claude puts on while it works stays inside it until you clear it. Around
+30 stations per pick, ordered by how much the directory's listeners play them.
+
+Anything Radio Browser tags works, not just the suggested list.
+
 **On "free and open source":** these stations are free to listen to and ad-free.
 The *music* on them is commercially licensed — not open-source or Creative
 Commons. For strictly CC or public-domain audio, look at Free Music Archive,
@@ -155,11 +176,12 @@ stream. Volume is mpv's own software volume; it never touches your system volume
 | Music sooner or later | `START_DELAY` in `bin/ccradio` (default 6.0s) |
 | Quieter ducking | `DUCK_RATIO` (default 0.25) |
 | Your own stations | `stations/curated.json` |
+| A whole genre or language | `ccradio genre <tag>` / `ccradio language <name>` |
 
 ## Develop
 
 ```sh
-python3 tests/test_ccradio.py    # 46 tests, no mpv/network/speakers needed
+python3 tests/test_ccradio.py    # 55 tests, no mpv/network/speakers needed
 claude plugin validate .
 ```
 
