@@ -7,7 +7,7 @@
     {
       "name": "ccradio",
       "source": "./",
-      "description": "Ad-free internet radio while Claude works."
+      "description": "Music that plays while Claude Code is working, so you know by ear when it's done."
     }
   ],
   "description": "Internet radio for Claude Code - ad-free stations that play while you work."
