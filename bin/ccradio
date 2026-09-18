@@ -562,34 +562,6 @@ def cmd_stop(_):
     say("stopped")
 
 
-def cmd_duck(_):
-    """Hook entry point: drop volume while Claude waits on the user."""
-    s = load_state()
-    if s.get("ducked") or not alive():
-        return
-    s["preduck"] = s["volume"]
-    target = max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO))
-    try:
-        ipc("set_property", "volume", target)
-    except Exception:
-        return
-    s["ducked"] = True
-    save_state(s)
-
-
-def cmd_unduck(_):
-    s = load_state()
-    if not s.get("ducked"):
-        return
-    try:
-        ipc("set_property", "volume", s.get("preduck") or s["volume"])
-    except Exception:
-        pass
-    s["ducked"] = False
-    s["preduck"] = None
-    save_state(s)
-
-
 def is_playing():
     """True only if the daemon is up and not paused."""
     try:
@@ -655,6 +627,9 @@ def cmd_arm(_):
     START_DELAY first, so a quick answer stays silent.
     """
     sid = session_id()
+    # You just replied, so nothing is waiting on you any more: lift any duck
+    # before the early return, or a duck taken mid-stretch never comes back up.
+    cmd_unduck([])
     w = read_working()
     was_idle = not w
     w[sid] = time.time()

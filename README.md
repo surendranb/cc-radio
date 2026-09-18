@@ -33,7 +33,7 @@ Five hooks, one script. No configuration.
 
 | Hook | What it means | What happens |
 |---|---|---|
-| `UserPromptSubmit` | Claude starts working | Arms a timer. After 6s of real work, music starts on a random station |
+| `UserPromptSubmit` | Claude starts working | Arms a timer. After 6s of real work, music starts on a random station. Lifts any duck, because you just replied |
 | `Stop` | Claude finished | Music stops |
 | `Notification` | Claude needs your attention | Volume ducks to 25% |
 | `PermissionRequest` | Claude is asking permission | Volume ducks |
@@ -141,7 +141,7 @@ stream. Volume is mpv's own software volume; it never touches your system volume
 ## Develop
 
 ```sh
-python3 tests/test_ccradio.py    # 33 tests, no mpv/network/speakers needed
+python3 tests/test_ccradio.py    # 41 tests, no mpv/network/speakers needed
 claude plugin validate .
 ```
 

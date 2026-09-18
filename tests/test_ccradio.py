@@ -347,6 +347,38 @@ class TestDuckSignal(Base):
         self._as("tab-A", self.cc.cmd_duck)
         self.assertFalse(self.cc.load_state()["ducked"])
 
+    def test_replying_lifts_the_duck(self):
+        """The duck means Claude is waiting on you. Replying means it is not."""
+        m = self.start_mpv(volume=80.0)
+        s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
+        self._tab_is_working("tab-A")
+        self._as("tab-A", self.cc.cmd_duck)
+        self.assertEqual(m.props["volume"], 20)
+        self._as("tab-A", self.cc.cmd_arm)
+        self.assertEqual(m.props["volume"], 80,
+                         "answering the prompt must bring the volume back")
+        self.assertFalse(self.cc.load_state()["ducked"])
+
+    def test_duck_lifts_even_while_another_tab_works(self):
+        """cmd_arm returns early when another tab is already working, so an
+        unduck placed after that return would never run for a second tab."""
+        m = self.start_mpv(volume=80.0)
+        s = self.cc.load_state(); s["volume"] = 80; self.cc.save_state(s)
+        self.cc.write_working({"tab-A": time.time(), "tab-B": time.time()})
+        self._as("tab-A", self.cc.cmd_duck)
+        self.assertEqual(m.props["volume"], 20)
+        self._as("tab-B", self.cc.cmd_arm)
+        self.assertEqual(m.props["volume"], 80)
+
+    def test_stale_duck_flag_clears_without_a_daemon(self):
+        """A duck left saved by a session that ended must not quietly hold the
+        next session's music at a quarter volume."""
+        s = self.cc.load_state()
+        s.update(ducked=True, preduck=70, volume=70)
+        self.cc.save_state(s)
+        self._as("tab-A", self.cc.cmd_arm)
+        self.assertFalse(self.cc.load_state()["ducked"])
+
 
 class TestPlaylistResolution(Base):
     def test_direct_stream_url_passes_through_untouched(self):
