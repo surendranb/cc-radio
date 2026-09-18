@@ -567,6 +567,64 @@ class TestAuditRegressions(Base):
             self.cc.shutil.which = real
 
 
+class TestDebugLog(Base):
+    """Tracing is off by default, and can never break the radio."""
+
+    def test_silent_and_writes_nothing_when_off(self):
+        os.environ.pop("CCRADIO_DEBUG", None)
+        self.cc.log("should not appear")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "debug.log")))
+
+    def test_records_when_on(self):
+        os.environ["CCRADIO_DEBUG"] = "1"
+        try:
+            self.cc.log("hello %s", "world")
+            with open(os.path.join(self.tmp, "debug.log")) as fh:
+                self.assertIn("hello world", fh.read())
+        finally:
+            os.environ.pop("CCRADIO_DEBUG", None)
+
+    def test_never_raises_even_when_unwritable(self):
+        os.environ["CCRADIO_DEBUG"] = "1"
+        try:
+            os.environ["CCRADIO_STATE_DIR"] = "/proc/nonexistent/nope"
+            self.cc.log("must not raise")      # the whole point: logging is safe
+        finally:
+            os.environ["CCRADIO_STATE_DIR"] = self.tmp
+            os.environ.pop("CCRADIO_DEBUG", None)
+
+    def test_rotates_instead_of_growing_forever(self):
+        os.environ["CCRADIO_DEBUG"] = "1"
+        try:
+            path = os.path.join(self.tmp, "debug.log")
+            with open(path, "w") as fh:
+                fh.write("x" * (self.cc.LOG_MAX + 1))
+            self.cc.log("after rotation")
+            self.assertTrue(os.path.exists(path + ".1"), "old log kept as .1")
+            self.assertLess(os.path.getsize(path), 200, "new log starts fresh")
+        finally:
+            os.environ.pop("CCRADIO_DEBUG", None)
+
+    def test_arm_and_disarm_leave_a_trail(self):
+        os.environ["CCRADIO_DEBUG"] = "1"
+        try:
+            import io
+            real, sys.stdin = sys.stdin, io.StringIO('{"session_id":"tab-A"}')
+            sys.stdin.isatty = lambda: False
+            self.cc.START_DELAY = 0.1
+            self.cc.cmd_arm([])
+            sys.stdin = io.StringIO('{"session_id":"tab-A"}')
+            sys.stdin.isatty = lambda: False
+            self.cc.cmd_disarm([])
+            sys.stdin = real
+            with open(os.path.join(self.tmp, "debug.log")) as fh:
+                trace = fh.read()
+            self.assertIn("arm tab-A", trace)
+            self.assertIn("disarm tab-A", trace)
+        finally:
+            os.environ.pop("CCRADIO_DEBUG", None)
+
+
 class TestPlaylistResolution(Base):
     def test_direct_stream_url_passes_through_untouched(self):
         u = "https://ice2.somafm.com/groovesalad-256-mp3"

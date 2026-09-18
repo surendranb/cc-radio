@@ -106,6 +106,7 @@ ccradio genre lofi         play a genre, and keep the automatic music in it
 ccradio language tamil     the same, by language
 ccradio genre off          go back to the built-ins
 ccradio working            which tabs are working right now
+ccradio debug [n|clear]    trace log: why the radio did or didn't act
 ccradio search <term>      find more through Radio Browser
 ccradio stop               stop everything
 ```
@@ -135,6 +136,38 @@ environment variable in `settings.json` never reaches it. Use the file instead.
 
 To print just the radio segment, run `ccradio statusline`. It prints nothing when
 the radio is off.
+
+## Diagnose a silent radio
+
+Hooks run detached with their output discarded, which is right for not
+disrupting a session. It also means a radio that stays quiet gives you nothing
+to go on. Turn on tracing to see every decision cc-radio makes:
+
+```jsonc
+// ~/.claude/settings.json
+"env": { "CCRADIO_DEBUG": "1" }
+```
+
+Restart Claude Code, then read the trace:
+
+```
+$ ccradio debug
+11:55:18  arm aaaaaaaa (was_idle=True, working=1)
+11:55:24  daemon up, pid 42425, volume 70
+11:55:24  play soma-thistle -> https://ice2.somafm.com/thistle-128-mp3
+11:55:26  arm bbbbbbbb (was_idle=False, working=2)
+11:55:27  ducked 70 -> 17
+11:55:27  duck from subagent ignored: not a working tab (subagent?)
+11:55:27  disarm aaaaaaaa (1 still working)
+11:55:27  disarm bbbbbbbb (0 still working)
+```
+
+The trace records why the radio did nothing as well as why it did something:
+a turn that ended inside the six-second delay, a station already loaded, a duck
+skipped because no daemon was running. Run `ccradio debug clear` to start over.
+
+Tracing writes nothing and costs nothing when `CCRADIO_DEBUG` is unset. The log
+caps at 512 KB and rotates once.
 
 ## Stations
 
@@ -195,14 +228,14 @@ turning the radio down doesn't quiet your calls or notifications.
 ## Develop
 
 ```sh
-python3 tests/test_ccradio.py    # 59 tests, no mpv, network, or speakers needed
+python3 tests/test_ccradio.py    # 64 tests, no mpv, network, or speakers needed
 claude plugin validate .
 ```
 
 ## Contributors
 
 - [@pavithramohan-netizen](https://github.com/pavithramohan-netizen) — genre and
-  language pools, and the duplicate-definition catch
+  language pools, the duplicate-definition catch, and the case for a trace log
 
 ## License
 

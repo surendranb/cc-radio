@@ -1,7 +1,7 @@
 {
   "name": "ccradio",
   "description": "Music that plays while Claude Code is working, so you know by ear when it's done.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "author": {
     "name": "Surendran"
   },

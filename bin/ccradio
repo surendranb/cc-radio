@@ -63,6 +63,29 @@ def state_path():
     return os.path.join(state_dir(), "state.json")
 
 
+LOG_MAX = 512 * 1024
+
+
+def log(msg, *args):
+    """Trace to a file when CCRADIO_DEBUG is set, otherwise do nothing.
+
+    Hooks run detached with their output sent to /dev/null, which is right for
+    not disrupting a session but leaves a quiet radio impossible to diagnose.
+    This is the way back in.
+    """
+    if not os.environ.get("CCRADIO_DEBUG"):
+        return
+    try:
+        path = os.path.join(state_dir(), "debug.log")
+        if os.path.exists(path) and os.path.getsize(path) > LOG_MAX:
+            os.replace(path, path + ".1")
+        with open(path, "a") as fh:
+            fh.write("%s %-6d %s\n" % (time.strftime("%H:%M:%S"), os.getpid(),
+                                       msg % args if args else msg))
+    except Exception:
+        pass                         # logging must never break the radio
+
+
 # --------------------------------------------------------------------------
 # state (atomic writes - several sessions may write at once)
 # --------------------------------------------------------------------------
@@ -183,8 +206,10 @@ def ipc(*command, timeout=2.0):
                         raise RuntimeError(msg["error"])
                     return msg.get("data")
         sk.close()
-    except (ConnectionRefusedError, FileNotFoundError, OSError):
+    except (ConnectionRefusedError, FileNotFoundError, OSError) as exc:
+        log("ipc %s failed: %s", command[0] if command else "?", exc)
         raise NotRunning()
+    log("ipc %s: no reply within %.1fs", command[0] if command else "?", timeout)
     raise NotRunning()
 
 
@@ -236,7 +261,9 @@ def start_daemon(s=None):
             break
         time.sleep(0.1)
     else:
+        log("mpv spawned (pid %s) but never answered on %s", proc.pid, path)
         die("mpv did not come up. Try: mpv --version")
+    log("daemon up, pid %s, volume %s", proc.pid, s["volume"])
     save_state(s)
     return s
 
@@ -290,6 +317,7 @@ def resolve_pls(url):
 def play(station, s=None):
     s = start_daemon(s or load_state())
     url = resolve_pls(station["url"])
+    log("play %s -> %s", station["id"], url)
     ipc("loadfile", url, "replace")
     ipc("set_property", "pause", False)
     s["station"] = station["id"]
@@ -703,6 +731,40 @@ def cmd_language(args):
     set_pool("language", "language", args)
 
 
+def cmd_debug(args):
+    """Show the trace log, or explain how to turn it on."""
+    path = os.path.join(state_dir(), "debug.log")
+    if args and args[0] in ("clear", "reset"):
+        for f in (path, path + ".1"):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+        say("log cleared")
+        return
+    if not os.environ.get("CCRADIO_DEBUG") and not os.path.exists(path):
+        say("Tracing is off, so nothing has been recorded.\n")
+        say("Hooks run detached with their output discarded, so a radio that")
+        say("stays quiet leaves nothing to go on. Turn tracing on to see why:\n")
+        say('  echo \'{"env": {"CCRADIO_DEBUG": "1"}}\' # add CCRADIO_DEBUG=1 to')
+        say("  # the env block of ~/.claude/settings.json, then restart Claude Code\n")
+        say("  ccradio debug          read the trace")
+        say("  ccradio debug clear    start it over")
+        return
+    if not os.path.exists(path):
+        say("Tracing is on, but nothing is recorded yet. Send a prompt first.")
+        return
+    n = 40
+    if args and args[0].lstrip("-").isdigit():
+        n = abs(int(args[0]))
+    with open(path) as fh:
+        lines = fh.read().splitlines()
+    for line in lines[-n:]:
+        say(line)
+    if not os.environ.get("CCRADIO_DEBUG"):
+        say("\n(tracing is off now - this is an older log)")
+
+
 def cmd_start(_):
     start_daemon()
     say("daemon up")
@@ -807,6 +869,7 @@ def cmd_arm(_):
         write_working(w)
     # You just sent a prompt, so you are back: undo any duck we applied.
     cmd_unduck([])
+    log("arm %s (was_idle=%s, working=%d)", sid[:8], was_idle, len(w))
     if not was_idle:
         return                       # music already going for another tab
     if os.fork() != 0:
@@ -816,9 +879,11 @@ def cmd_arm(_):
     try:
         with locked():               # one starter at a time, or we spawn two mpvs
             if sid not in read_working():
+                log("arm %s: turn ended inside the delay, staying quiet", sid[:8])
                 os._exit(0)          # this tab finished - stay quiet
             try:
                 if not ipc("get_property", "idle-active"):
+                    log("arm %s: a station is already loaded, leaving it", sid[:8])
                     os._exit(0)      # a station is already loaded - don't stomp it
             except Exception:
                 pass                 # no daemon yet - ours to start
@@ -829,8 +894,9 @@ def cmd_arm(_):
             save_state(s)
     except SystemExit:
         raise
-    except Exception:
-        pass
+    except Exception as exc:
+        log("arm %s: could not start music: %s: %s", sid[:8],
+            type(exc).__name__, exc)
     os._exit(0)
 
 
@@ -841,9 +907,11 @@ def cmd_disarm(_):
         w = read_working()
         w.pop(sid, None)
         write_working(w)
+    log("disarm %s (%d still working)", sid[:8], len(w))
     if w:
         return                       # another tab is still working - keep playing
     if load_state().get("manual"):
+        log("disarm: music was started by hand, leaving it")
         return                       # you put this on yourself - not ours to stop
     stop_daemon()
 
@@ -866,22 +934,28 @@ def cmd_duck(_):
     separate session_id, and a subagent going idle is not you being asked for
     anything - ducking on those would dip the music at random.
     """
-    if session_id() not in read_working():
+    sid = session_id()
+    if sid not in read_working():
+        log("duck from %s ignored: not a working tab (subagent?)", sid[:8])
         return
     s = load_state()
     if not alive():
         # A daemon that died while ducked leaves the flag set. Clear it, or it
         # swallows the next real duck and status reports a lie.
+        log("duck from %s: no daemon running, nothing to duck", sid[:8])
         if s.get("ducked"):
+            log("cleared a stale ducked flag left by a dead daemon")
             s["ducked"], s["preduck"] = False, None
             save_state(s)
         return
     try:
         current = int(ipc("get_property", "volume"))
-    except Exception:
+    except Exception as exc:
+        log("duck: could not read volume: %s", exc)
         return
     target = max(DUCK_FLOOR, int(s["volume"] * DUCK_RATIO))
     if s.get("ducked") and current <= target:
+        log("duck: already at %d, nothing to do", current)
         return                       # genuinely ducked already
     # Trust mpv's volume, not the stored flag - the flag can go stale.
     s["preduck"] = current
@@ -891,6 +965,7 @@ def cmd_duck(_):
         return
     s["ducked"] = True
     save_state(s)
+    log("ducked %d -> %d", current, target)
 
 
 def cmd_unduck(_):
@@ -912,7 +987,7 @@ COMMANDS = {
     "vol": cmd_vol, "volume": cmd_vol, "now": cmd_now, "status": cmd_status,
     "stations": cmd_stations, "list": cmd_stations, "search": cmd_search,
     "genre": cmd_genre, "language": cmd_language, "lang": cmd_language,
-    "statusline": cmd_statusline,
+    "statusline": cmd_statusline, "debug": cmd_debug,
     "start": cmd_start, "stop": cmd_stop,
     "duck": cmd_duck, "unduck": cmd_unduck,
     "arm": cmd_arm, "disarm": cmd_disarm, "working": cmd_working,
@@ -928,6 +1003,7 @@ USAGE = """ccradio - internet radio while Claude works
   now                current track
   status             what's playing right now
   working            which Claude Code tabs are working right now
+  debug [n|clear]    trace log - why the radio did or didn't do something
   statusline         compact segment for the Claude Code statusline
   stations           list the stations in play
   genre [name|off]   play a genre, and keep the automatic music in it
