@@ -70,7 +70,7 @@ test("an agent ending with no id is taken as every agent ending", () => {
   assert.equal(t.record().agents, 0);
 });
 
-test("report args are what bin/ccradio parses", () => {
+test("report args are what scripts/ccradio parses", () => {
   const t = new TabTracker();
   t.turnStart();
   t.askStart();

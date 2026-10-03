@@ -22,7 +22,8 @@ cc-radio needs the following:
   [mod](https://code.claude.com/docs/en/plugins/mods/overview), and mods need
   this version. Run `claude --version` to check, and update if yours is older.
 - **[mpv](https://mpv.io)**, which plays the audio.
-- **Python 3**, which macOS and most Linux distributions include.
+- **Python 3**. On macOS it comes with the Xcode Command Line Tools
+  (`xcode-select --install`) or Homebrew; most Linux distributions include it.
 - **macOS or Linux.** cc-radio doesn't run on Windows, and mods don't load in a
   WSL session of the Desktop app.
 
@@ -33,7 +34,10 @@ brew install mpv          # macOS
 sudo apt install mpv      # Debian, Ubuntu
 ```
 
-cc-radio was last tested on Claude Code 2.1.288.
+cc-radio was last tested on Claude Code 2.1.288. If mpv isn't on the `PATH`
+that Claude Code sees, which can happen when you start it from a GUI, set
+`CCRADIO_MPV` to mpv's full path in the `env` block of
+`~/.claude/settings.json`.
 
 ## Install cc-radio
 
@@ -58,7 +62,7 @@ than six seconds.
 ### What the mod can do
 
 A mod runs inside Claude Code with your own permissions. This one hooks nine
-events and runs one process, `bin/ccradio` in this repository, which drives
+events and runs one process, `scripts/ccradio` in this repository, which drives
 mpv. mpv fetches the streams. The script calls one web service,
 [Radio Browser](https://www.radio-browser.info/), and only when you run
 `search`, `genre`, or `language`.
@@ -120,15 +124,18 @@ AskUserQuestion pauses the music in every mode.
 
 ### The player
 
-The player is `bin/ccradio`. It keeps every tab's record, decides from all of
+The player is `scripts/ccradio`. It keeps every tab's record, decides from all of
 them whether music should play, and makes mpv match. The decision is one pure
 function of the records, and every player command is safe to repeat, so it
 doesn't matter which tab reports first, twice, or late. They all reach the same
 answer from the same facts.
 
-The heartbeat keeps the signal honest. A tab that crashes, or closes without
-reporting, stops refreshing its record, and 20 seconds later the other tabs
-stop counting it. A missed event can't leave the music on for hours.
+The heartbeat and a watchdog keep the signal honest. A busy tab refreshes its
+record every five seconds. A tab that crashes, or closes without reporting,
+stops refreshing it, and 20 seconds later the record no longer counts. The
+player also runs a small watchdog process for as long as mpv is up. Every ten
+seconds it reconciles the player with the records, so even when the only tab
+dies without a word, the music stops within half a minute.
 
 The six-second delay handles short turns. Without it, every "yes" and "thanks"
 triggers a burst of noise. With it, silence means done and music means working.
@@ -188,8 +195,7 @@ and costs no tokens.
 ```
 
 The same verbs work from any shell as `ccradio <verb>` after you add the
-plugin's `bin` directory to your `PATH`, and from Claude's Bash tool as a bare
-command.
+plugin's `scripts` directory to your `PATH`.
 
 ### Who owns the music
 
@@ -282,7 +288,9 @@ them.
 
 Any tag that [Radio Browser](https://www.radio-browser.info/) knows works, not
 only the suggested ones. There's no API key. cc-radio hands only plain `http`
-and `https` streams to mpv.
+and `https` streams to mpv, starts mpv with `--ytdl=no` so a directory entry
+can never run yt-dlp, and strips terminal control characters from every
+station name and track title before it shows them.
 
 ### A note on "free and open source"
 
@@ -308,7 +316,7 @@ The mod draws the station and track in the band above the prompt while music
 plays, and nothing when it's silent.
 
 If you'd rather have it in the status line, point `statusLine.command` in
-`~/.claude/settings.json` at `bin/ccradio-statusline`. To keep a status line
+`~/.claude/settings.json` at `scripts/ccradio-statusline`. To keep a status line
 you already have, put its command in `~/.config/ccradio/base-statusline`.
 
 ## Tune cc-radio
@@ -323,7 +331,7 @@ you already have, put its command in `~/.config/ccradio/base-statusline`.
 Run the checks from the repository root:
 
 ```sh
-python3 tests/test_ccradio.py    # the player: 81 tests, no mpv, network, or speakers
+python3 tests/test_ccradio.py    # the player: 90 tests, no mpv, network, or speakers
 node --test tests/               # the mod's pure part
 claude plugin validate .         # the manifest, and what the mod hooks and calls
 claude plugin test               # the mod against a fake host, 2.1.287 or later
@@ -335,7 +343,7 @@ file in it changes.
 
 ## Contributors
 
-- [@pavithramohan-netizen](https://github.com/pavithramohan-netizen): genre and
+- [Pavithra Mohan (@pavi-mo-han)](https://github.com/pavi-mo-han): genre and
   language pools, the duplicate-definition catch, and the case for a trace log
 
 ## License

@@ -1,4 +1,4 @@
-// One tab's view of itself, kept by the mod and reported to bin/ccradio.
+// One tab's view of itself, kept by the mod and reported to scripts/ccradio.
 //
 // Pure: no mods API in here, so it runs under plain node for tests. Every
 // method returns true when the record changed, so the caller reports only

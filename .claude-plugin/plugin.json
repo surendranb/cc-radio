@@ -1,13 +1,27 @@
 {
   "name": "ccradio",
+  "displayName": "cc-radio",
   "description": "Music that plays while Claude Code is working, so you know by ear when it's done.",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": {
     "name": "Surendran"
   },
   "homepage": "https://github.com/surendranb/cc-radio",
   "repository": "https://github.com/surendranb/cc-radio",
   "license": "MIT",
+  "metadata": {
+    "contributors": [
+      {
+        "name": "Pavithra Mohan",
+        "url": "https://github.com/pavi-mo-han",
+        "contribution": "genre and language pools, the duplicate-definition catch, the trace log"
+      }
+    ]
+  },
+  "icon": "./icon.svg",
+  "documentationUrl": "https://github.com/surendranb/cc-radio#readme",
+  "supportUrl": "https://github.com/surendranb/cc-radio/issues",
+  "privacyPolicyUrl": "https://github.com/surendranb/cc-radio/blob/main/PRIVACY.md",
   "keywords": [
     "radio",
     "music",

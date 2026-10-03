@@ -1,12 +1,12 @@
 ---
 description: Control the radio in plain words - "put on something ambient", "find a jazz station", "quieter"
 argument-hint: "[what you want, in words]"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/ccradio:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ccradio:*)
 ---
 
 The radio's current state:
 
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ccradio" status`
+!`"${CLAUDE_PLUGIN_ROOT}/scripts/ccradio" status`
 
 The user asked: $ARGUMENTS
 
@@ -21,7 +21,7 @@ do not offer follow-ups. If they asked for nothing, report the state above.
 - "louder" / "quieter" -> `ccradio vol up` / `ccradio vol down`
 - "pause", "quiet", "stop" -> `ccradio pause`; "resume", "back on" -> `ccradio auto`
 
-Run `"${CLAUDE_PLUGIN_ROOT}/bin/ccradio" <args>` for each call.
+Run `"${CLAUDE_PLUGIN_ROOT}/scripts/ccradio" <args>` for each call.
 
 For a plain verb the user should prefer `/ccradio <verb>`, which runs at once
 and costs no tokens, even while Claude is working.

@@ -29,7 +29,7 @@ import time
 import urllib.parse
 import urllib.request
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 UA = "cc-radio/%s (+https://github.com/surendranb/cc-radio)" % VERSION
 VOL_STEP = 10
 VOL_MAX = 130
@@ -65,7 +65,7 @@ def start_delay():
 
 
 FRESH_AFTER = 20.0      # a tab that has not reported for this long is forgotten
-AGENTS_STALE = 600.0    # a subagent count nobody has refreshed for 10 min is noise
+AGENTS_STALE = 1800.0   # a subagent count that has not changed in 30 min is noise
 
 
 # --------------------------------------------------------------------------
@@ -73,19 +73,19 @@ AGENTS_STALE = 600.0    # a subagent count nobody has refreshed for 10 min is no
 # --------------------------------------------------------------------------
 
 def state_dir():
-    d = os.environ.get("CCRADIO_STATE_DIR") or os.path.expanduser(
-        "~/.local/state/ccradio")
-    os.makedirs(d, exist_ok=True)
+    d = os.environ.get("CCRADIO_STATE_DIR")
+    if not d:
+        base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+        d = os.path.join(base, "ccradio")
+    os.makedirs(d, mode=0o700, exist_ok=True)
     return d
 
 
 def sock_path():
-    if os.environ.get("CCRADIO_SOCK"):
-        return os.environ["CCRADIO_SOCK"]
-    run = os.environ.get("XDG_RUNTIME_DIR")
-    if run and os.path.isdir(run):
-        return os.path.join(run, "ccradio.sock")
-    return os.path.join(state_dir(), "ipc.sock")
+    """One socket per state directory, so every process that shares the
+    state also shares the player. (A per-environment runtime dir would let
+    a shell and a Claude Code tab each talk to a different mpv.)"""
+    return os.environ.get("CCRADIO_SOCK") or os.path.join(state_dir(), "ipc.sock")
 
 
 def state_path():
@@ -123,15 +123,17 @@ def log(msg, *args):
 # --------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def locked():
-    """Serialise every read-modify-write across tabs.
+def locked(name="player"):
+    """Serialise read-modify-write across processes.
 
-    One lock for everything: the tab records, state.json, and the player.
-    Several tabs report at once, and two of them deciding "nobody is playing,
-    I will start" at the same instant is exactly the bug this prevents.
-    Not reentrant - never nest it.
+    Two locks. "tabs" guards the tab records and is held for a millisecond,
+    so a hook that reports never waits on anything slow. "player" guards
+    state.json and mpv, and may be held for seconds while a stream starts.
+    Two tabs deciding "nobody is playing, I will start" at the same instant
+    is exactly what the player lock prevents. Neither lock is reentrant:
+    never nest the same one.
     """
-    fh = open(os.path.join(state_dir(), "lock"), "w")
+    fh = open(os.path.join(state_dir(), name + ".lock"), "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX)
         yield
@@ -140,6 +142,21 @@ def locked():
             fcntl.flock(fh, fcntl.LOCK_UN)
         finally:
             fh.close()
+
+
+def clean(text, limit=120):
+    """Text from a stream or a directory, made safe for a terminal and a prompt.
+
+    A station operator controls the ICY title, and anyone on the path of a
+    plain-http stream can rewrite it. Strip control characters, so nothing
+    can move the cursor or recolour the band, and keep it short.
+    """
+    if not isinstance(text, str):
+        return ""
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?", "", text)   # OSC: titles, links
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)                # CSI: colours, cursor
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", text)                 # anything else
+    return text.strip()[:limit]
 
 
 def _write_json(path, data):
@@ -315,8 +332,21 @@ def mpv_hint():
             else "sudo apt install mpv   # or your package manager")
 
 
+def find_mpv():
+    """mpv's path: CCRADIO_MPV, then PATH, then where package managers put it.
+
+    A Claude Code started from a GUI can have a PATH without Homebrew on it.
+    """
+    for candidate in (os.environ.get("CCRADIO_MPV"), shutil.which("mpv"),
+                      "/opt/homebrew/bin/mpv", "/usr/local/bin/mpv", "/usr/bin/mpv",
+                      "/snap/bin/mpv"):
+        if candidate and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def require_mpv():
-    if shutil.which("mpv"):
+    if find_mpv():
         return
     log("mpv is not installed")
     die("mpv is not installed. cc-radio needs it.\n  %s" % mpv_hint())
@@ -340,7 +370,8 @@ def start_daemon(s=None):
             pass
     with open(os.devnull, "wb") as devnull:
         proc = subprocess.Popen(
-            ["mpv", "--idle=yes", "--no-video", "--no-terminal",
+            [find_mpv(), "--idle=yes", "--no-video", "--no-terminal",
+             "--ytdl=no",            # a directory URL must never reach yt-dlp
              "--input-ipc-server=" + path,
              "--volume=%d" % s["volume"],
              # Keep the stream alive through flaky wifi rather than dying.
@@ -366,7 +397,53 @@ def start_daemon(s=None):
         die("mpv did not come up. Try: mpv --version")
     log("daemon up, pid %s, volume %s", proc.pid, s["volume"])
     save_state(s)
+    start_watchdog()
     return s
+
+
+def start_watchdog():
+    """A detached process that reconciles every few seconds while mpv lives.
+
+    The tabs drive the player, but a tab that dies without a word drives
+    nothing. With one tab open and gone, nobody would ever stop the music.
+    The watchdog is that somebody: it exits when the daemon does.
+    """
+    if os.environ.get("CCRADIO_NO_WATCHDOG"):
+        return
+    try:
+        with open(os.devnull, "wb") as devnull:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "watchdog"],
+                             stdout=devnull, stderr=devnull, stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+    except Exception as exc:
+        log("watchdog: could not start: %s", exc)
+
+
+WATCHDOG_EVERY = 10.0
+
+
+def cmd_watchdog(_):
+    """Reconcile every WATCHDOG_EVERY seconds until the daemon is gone. One at a time."""
+    fh = open(os.path.join(state_dir(), "watchdog.lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return                           # another watchdog is on duty
+    log("watchdog up")
+    try:
+        while True:
+            time.sleep(WATCHDOG_EVERY)
+            if not alive():
+                log("watchdog: daemon gone, standing down")
+                return
+            try:
+                _reconcile_once()
+            except SystemExit:
+                pass
+            except Exception as exc:
+                log("watchdog: %s: %s", type(exc).__name__, exc)
+    finally:
+        fh.close()
 
 
 def pid_is_our_mpv(pid):
@@ -483,7 +560,7 @@ def now_playing(timeout=2.0):
             continue
         if not v or not isinstance(v, str):
             continue
-        v = v.strip()
+        v = clean(v)
         if not v or v.startswith("http") or v.lower() == placeholder:
             continue
         return v
@@ -657,7 +734,7 @@ def _reconcile_once():
 
 def report(sid, fields, gone=False):
     """Record one tab's state, then reconcile. The mod calls this on every change."""
-    with locked():
+    with locked("tabs"):
         try:
             with open(tabs_path()) as fh:
                 tabs = json.load(fh)
@@ -673,10 +750,13 @@ def report(sid, fields, gone=False):
         if gone:
             tabs.pop(sid, None)
         else:
-            rec = dict(tabs.get(sid) or {})
+            prev = tabs.get(sid) or {}
+            rec = dict(prev)
             rec.update(fields)
             rec["at"] = now
-            if "agents" in fields:
+            # The clock on a subagent count starts when the count changes, not
+            # on every heartbeat, or a leaked agent would count forever.
+            if "agents" in fields and fields["agents"] != prev.get("agents"):
                 rec["agents_at"] = now
             tabs[sid] = rec
         write_tabs(tabs)
@@ -701,7 +781,7 @@ def describe(s=None):
     st = find_station(s.get("station"))
     mode = s["mode"]
     if not alive():
-        if not shutil.which("mpv"):
+        if not find_mpv():
             return "mpv is not installed - no audio. Install it with: %s" % mpv_hint()
         return "stopped" + ("" if mode == "auto" else "  |  %s" % mode)
     bits = []
@@ -732,18 +812,30 @@ def describe(s=None):
 # search
 # --------------------------------------------------------------------------
 
+_RB_SERVER = None
+
+
 def rb_server():
+    """One of Radio Browser's mirrors, looked up once per process."""
+    global _RB_SERVER
+    if _RB_SERVER:
+        return _RB_SERVER
     try:
         req = urllib.request.Request(
             "https://all.api.radio-browser.info/json/servers",
             headers={"User-Agent": UA})
-        servers = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        servers = json.loads(urllib.request.urlopen(req, timeout=5).read())
         names = sorted({s["name"] for s in servers if s.get("name")})
         if names:
-            return random.choice(names)
+            _RB_SERVER = random.choice(names)
     except Exception:
         pass
-    return "de1.api.radio-browser.info"
+    _RB_SERVER = _RB_SERVER or "de1.api.radio-browser.info"
+    return _RB_SERVER
+
+
+class DirectoryDown(Exception):
+    pass
 
 
 def rb_query(params):
@@ -751,7 +843,11 @@ def rb_query(params):
                                     reverse="true"))
     url = "https://%s/json/stations/search?%s" % (rb_server(), q)
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    recs = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    try:
+        recs = json.loads(urllib.request.urlopen(req, timeout=8).read())
+    except Exception as exc:
+        log("radio browser: %s", exc)
+        raise DirectoryDown()
     return [r for r in recs if isinstance(r, dict)
             and safe_url(r.get("url_resolved") or r.get("url"))]
 
@@ -761,10 +857,7 @@ def search(term, limit=20):
     misses a genre typed as a search term, so ask twice and merge."""
     seen, out = set(), []
     for field in ("name", "tag"):
-        try:
-            recs = rb_query({field: term, "limit": limit})
-        except Exception:
-            recs = []
+        recs = rb_query({field: term, "limit": limit})
         for r in recs:
             key = r.get("stationuuid") or r.get("url")
             if key in seen:
@@ -841,11 +934,11 @@ def pool_id(name, taken):
 
 def as_station(rec, taken):
     """Reshape a Radio Browser record into what stations() hands out."""
-    name = (rec.get("name") or "").strip() or "unnamed"
+    name = clean(rec.get("name"), 60) or "unnamed"
     return {
         "id": pool_id(name, taken),
         "name": name,
-        "genre": (rec.get("tags") or "").replace(",", ", ")[:44],
+        "genre": clean(rec.get("tags"), 44).replace(",", ", "),
         "url": rec.get("url_resolved") or rec.get("url"),
         "source": "Radio Browser",
         "homepage": rec.get("homepage") or "",
@@ -882,8 +975,8 @@ def cmd_play(args):
                 die("no search result %s - run: ccradio search <term>" % key)
             r = found[i]
             st = {"id": "rb-" + str(r.get("stationuuid", ""))[:8],
-                  "name": (r.get("name") or "unnamed").strip(),
-                  "genre": r.get("tags", ""),
+                  "name": clean(r.get("name"), 60) or "unnamed",
+                  "genre": clean(r.get("tags"), 44),
                   "url": r.get("url_resolved") or r.get("url"),
                   "source": "Radio Browser"}
         else:
@@ -927,11 +1020,15 @@ def cmd_shuffle(_):
 
 
 def cmd_auto(_):
-    """Hand the radio back to the tabs."""
-    s = load_state()
-    _set_mode(s, "auto")
-    reconcile()
-    say("auto: " + describe())
+    """Hand the radio back to the tabs. If one is working, music comes back now."""
+    with locked():
+        s = load_state()
+        s["mode"] = "auto"
+        s["wanted_since"] = time.time() - start_delay()   # you asked: no delay
+        save_state(s)
+    reconcile(fork=not os.environ.get("CCRADIO_SYNC"))
+    wanted, _, why = decide(read_tabs())
+    say("auto: %s" % ("music is on its way (%s)" % why if wanted else "silent (%s)" % why))
 
 
 def cmd_off(_):
@@ -990,7 +1087,10 @@ def cmd_statusline(args):
     width = 46
     for a in args:
         if a.startswith("--width="):
-            width = max(12, int(a.split("=", 1)[1]))
+            try:
+                width = max(12, int(a.split("=", 1)[1]))
+            except ValueError:
+                pass
     try:
         if not alive(timeout=0.4):
             return
@@ -1027,15 +1127,18 @@ def cmd_stations(_):
 def cmd_search(args):
     if not args:
         die("usage: ccradio search <term>")
-    res = search(" ".join(args))
+    try:
+        res = search(" ".join(args))
+    except DirectoryDown:
+        die("Radio Browser is unreachable right now - the built-in stations still work")
     if not res:
         say("no stations found")
         return
     save_found(res)
     for i, r in enumerate(res, 1):
         say("%2d. %-34s %-8s %-6s %s" % (
-            i, (r.get("name") or "").strip()[:34], (r.get("countrycode") or "")[:8],
-            "%skbps" % r.get("bitrate", "?"), (r.get("tags") or "")[:36]))
+            i, clean(r.get("name"), 34), clean(r.get("countrycode"), 8),
+            "%skbps" % r.get("bitrate", "?"), clean(r.get("tags"), 36)))
     say("\nplay one with: ccradio play <number>")
 
 
@@ -1065,18 +1168,22 @@ def set_pool(field, word, args):
         save_state(s)
         say("back to the built-in stations")
         return
-    sts = rb_fetch(field, term)
+    try:
+        sts = rb_fetch(field, term)
+    except DirectoryDown:
+        die("Radio Browser is unreachable right now - the built-in stations still work")
     if not sts:
         die("nothing found for %s '%s'. See: ccradio %s" % (word, term, word))
-    write_pool("%s: %s" % (word, term), sts)
-    s = load_state()
-    s["order"] = []
-    save_state(s)
-    say("%s: %s  (%d stations)" % (word, term, len(sts)))
-    # Switch the music over if there is any, but do not start any: the pool
-    # is a preference, and the tabs decide when it plays.
-    if loaded() or s["mode"] == "manual":
-        play(random.choice(sts), s)
+    with locked():                      # the fetch ran outside; the switch runs inside
+        write_pool("%s: %s" % (word, term), sts)
+        s = load_state()
+        s["order"] = []
+        save_state(s)
+        say("%s: %s  (%d stations)" % (word, term, len(sts)))
+        # Switch the music over if there is any, but do not start any: the pool
+        # is a preference, and the tabs decide when it plays.
+        if loaded() or s["mode"] == "manual":
+            play(random.choice(sts), s)
 
 
 def cmd_genre(args):
@@ -1182,7 +1289,11 @@ def cmd_report(args):
     # Hand the mod a band line in the same breath, so it costs no extra process.
     # The forked reconcile may still be at work, so only claim music the tabs want.
     wanted, _, _ = decide(read_tabs())
-    if load_state()["mode"] == "manual" or (wanted and load_state()["mode"] == "auto"):
+    mode = load_state()["mode"]
+    if wanted and mode == "auto" and not find_mpv():
+        say("cc-radio: install mpv to hear the radio (%s)" % mpv_hint().split("   #")[0])
+        return
+    if mode == "manual" or (wanted and mode == "auto"):
         cmd_statusline([])
 
 
@@ -1203,8 +1314,13 @@ COMMANDS = {
     "genre": cmd_genre, "language": cmd_language, "lang": cmd_language,
     "statusline": cmd_statusline, "debug": cmd_debug,
     "start": cmd_start, "working": cmd_working,
-    "report": cmd_report, "reconcile": cmd_reconcile,
+    "report": cmd_report, "reconcile": cmd_reconcile, "watchdog": cmd_watchdog,
 }
+
+# Commands that read, change, and act on the player state: one at a time, and
+# never while a reconciler is mid-start. The rest lock what they need inside.
+LOCKED = {"play", "next", "prev", "previous", "shuffle", "off", "pause", "stop",
+          "vol", "volume", "start"}
 
 USAGE = """ccradio - internet radio while Claude works
 
@@ -1224,7 +1340,7 @@ USAGE = """ccradio - internet radio while Claude works
   working            which tabs are reporting, and what the radio decided
   debug [n|clear]    trace log - why the radio did or didn't do something
   statusline         compact segment for the Claude Code statusline
-  report / reconcile what the mod calls; you never need to
+  report / reconcile / watchdog   what the mod and the player call; you never need to
 """
 
 
@@ -1239,11 +1355,21 @@ def main(argv):
     if not fn:
         die("unknown command '%s'. Try: ccradio help" % cmd)
     try:
-        fn(argv[1:])
+        if cmd in LOCKED:
+            with locked():
+                fn(argv[1:])
+        else:
+            fn(argv[1:])
     except NotRunning:
         die("the player is not running - run: ccradio play")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        log("%s: %s: %s", cmd, type(exc).__name__, exc)
+        die("%s failed: %s: %s" % (cmd, type(exc).__name__, exc))
     return 0
 
 
 if __name__ == "__main__":
+    os.umask(0o077)                      # state files and the socket are ours alone
     sys.exit(main(sys.argv[1:]))

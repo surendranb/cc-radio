@@ -2,7 +2,7 @@
 # Claude Code statusline: your existing statusline, with the radio appended.
 #
 #   "statusLine": { "type": "command",
-#                   "command": "/path/to/cc-radio/bin/ccradio-statusline" }
+#                   "command": "/path/to/cc-radio/scripts/ccradio-statusline" }
 #
 # Optional: the mod already shows the station in the band above the prompt.
 # Use this when you would rather have it in the statusline.
@@ -24,7 +24,7 @@ if [ -n "$YOUR_STATUSLINE" ]; then
 else
   base=""
 fi
-radio="$("$ROOT/bin/ccradio" statusline 2>/dev/null)"
+radio="$("$ROOT/scripts/ccradio" statusline 2>/dev/null)"
 
 if [ -n "$radio" ] && [ -n "$base" ]; then
   printf '%s  \033[2m|\033[0m  %s\n' "$base" "$radio"

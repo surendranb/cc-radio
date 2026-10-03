@@ -1,4 +1,4 @@
 {
-  "description": "cc-radio: the tab sensor. Reports to bin/ccradio, which drives mpv.",
+  "description": "cc-radio: the tab sensor. Reports to scripts/ccradio, which drives mpv.",
   "modules": ["./register.js"]
 }

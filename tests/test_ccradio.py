@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for bin/ccradio. No mpv, no network, no speakers required.
+"""Tests for scripts/ccradio. No mpv, no network, no speakers required.
 
 Run:  python3 tests/test_ccradio.py
 
@@ -24,7 +24,7 @@ import importlib.util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-EXE = os.path.join(ROOT, "bin", "ccradio")
+EXE = os.path.join(ROOT, "scripts", "ccradio")
 DELAY = 0.3
 
 
@@ -32,6 +32,7 @@ def load_cli(state_dir, sock):
     os.environ["CCRADIO_STATE_DIR"] = state_dir
     os.environ["CCRADIO_SOCK"] = sock
     os.environ["CCRADIO_SYNC"] = "1"                 # no forked reconcilers in tests
+    os.environ["CCRADIO_NO_WATCHDOG"] = "1"
     os.environ["CCRADIO_START_DELAY"] = str(DELAY)
     return load_module("ccradio_mod")
 
@@ -191,6 +192,16 @@ class TestDecide(Base):
         tabs = {"a": self.rec(agents=2, agents_at=1000.0 - self.cc.AGENTS_STALE - 1)}
         self.assertEqual(self.cc.decide(tabs, 1000.0)[:2], (False, "idle"))
 
+    def test_a_heartbeat_with_the_same_agent_count_does_not_reset_the_clock(self):
+        """The old bug: every heartbeat refreshed agents_at, so a leaked agent counted forever."""
+        self.cc.report("A", {"turn": False, "agents": 1})
+        first = self.cc.read_tabs()["A"]["agents_at"]
+        time.sleep(0.05)
+        self.cc.report("A", {"turn": False, "agents": 1})      # the heartbeat
+        self.assertEqual(self.cc.read_tabs()["A"]["agents_at"], first)
+        self.cc.report("A", {"turn": False, "agents": 2})      # a real change
+        self.assertGreater(self.cc.read_tabs()["A"]["agents_at"], first)
+
     def test_tabs_that_stop_reporting_are_forgotten(self):
         self.cc.write_tabs({
             "dead": {"turn": True, "at": time.time() - self.cc.FRESH_AFTER - 1},
@@ -310,6 +321,29 @@ class TestReconcile(Base):
         self.assertGreaterEqual(len(loads), 6)
         self.assertTrue(all(a != b for a, b in zip(loads, loads[1:])),
                         "two runs in a row must not land on the same station")
+
+
+class TestWatchdog(Base):
+    def test_a_dead_last_tab_cannot_leave_music_playing(self):
+        """The old gap: with one tab gone without a word, nobody ever reconciled."""
+        m = self.start_mpv()
+        self.tab("A", turn=1)
+        self.assertEqual(len(m.loads()), 1)
+        # The tab dies: its record goes stale, and nobody reports any more.
+        self.cc.write_tabs({"A": {"turn": True, "at": time.time() - self.cc.FRESH_AFTER - 1}})
+        self.cc._reconcile_once()          # what the watchdog runs every few seconds
+        self.assertTrue(m.sent("quit"), "no live tab means the daemon goes down")
+
+    def test_only_one_watchdog_runs(self):
+        import fcntl
+        fh = open(os.path.join(self.tmp, "watchdog.lock"), "w")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            t0 = time.time()
+            self.cc.cmd_watchdog([])       # a second one must stand down at once
+            self.assertLess(time.time() - t0, 1.0)
+        finally:
+            fh.close()
 
 
 class TestModes(Base):
@@ -493,6 +527,17 @@ class TestGenrePools(Base):
         for url in m.loads():
             self.assertIn(url, [s["url"] for s in self.POOL], "automatic music escaped the pool")
 
+    def test_directory_down_is_one_clear_line(self):
+        self.cc.rb_query = lambda params: (_ for _ in ()).throw(self.cc.DirectoryDown())
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                self.cc.cmd_genre(["jazz"])
+            with self.assertRaises(SystemExit):
+                self.cc.cmd_search(["jazz"])
+        self.assertIn("Radio Browser is unreachable", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
     def test_language_pool_is_labelled_as_a_language(self):
         self.fake_fetch(self.POOL)
         self.quietly(self.cc.cmd_language, ["tamil"])
@@ -570,6 +615,21 @@ class TestIPC(Base):
             bystander.wait()
 
 
+class TestUntrustedText(Base):
+    def test_control_characters_never_reach_the_terminal(self):
+        """A station operator writes the ICY title; it must not be able to recolour the band."""
+        self.assertEqual(self.cc.clean("\x1b[31mRED\x1b[0m title\x07"), "RED title")
+        self.assertEqual(self.cc.clean("x" * 500), "x" * 120)
+        self.assertEqual(self.cc.clean(None), "")
+        self.start_mpv(**{"metadata/by-key/icy-title": "\x1b]0;evil\x07Artist - Track",
+                          "path": "https://ice2.somafm.com/lush-128-mp3", "idle-active": False})
+        self.assertEqual(self.cc.now_playing(), "Artist - Track")
+        st = self.cc.as_station({"name": "Bad\x1b[2JName", "url": "https://x.test/a",
+                                 "tags": "a,\x00b"}, set())
+        self.assertEqual(st["name"], "BadName")
+        self.assertEqual(st["genre"], "a, b")
+
+
 class TestNowPlaying(Base):
     def test_returns_icy_title(self):
         self.start_mpv(**{"metadata/by-key/icy-title": "Artist - Track",
@@ -644,17 +704,69 @@ class TestCommands(Base):
         with self.assertRaises(SystemExit):
             self.quietly(self.cc.cmd_report, [])
 
+    def test_any_crash_is_one_line_not_a_traceback(self):
+        self.cc.COMMANDS["boom"] = lambda a: (_ for _ in ()).throw(RuntimeError("kaput"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as cm:
+                self.cc.main(["boom"])
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual(err.getvalue().count("\n"), 1)
+        self.assertIn("kaput", err.getvalue())
+
+    def test_missing_mpv_shows_an_install_hint_in_the_band(self):
+        """A first-time user without mpv must see why nothing plays."""
+        real = self.cc.find_mpv
+        self.cc.find_mpv = lambda: None
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.cc.cmd_report(["A", "turn=1"])
+            self.assertIn("install mpv", out.getvalue())
+        finally:
+            self.cc.find_mpv = real
+
+    def test_auto_does_not_wait_out_a_fresh_start_delay(self):
+        m = self.start_mpv()
+        self.tab("A", turn=1)
+        self.quietly(self.cc.cmd_off, [])
+        t0 = time.time()
+        self.quietly(self.cc.cmd_auto, [])
+        self.assertLess(time.time() - t0, DELAY, "you asked for music: no delay")
+        self.assertEqual(len(m.loads()), 2)
+
     def test_missing_mpv_is_reported_not_silent(self):
-        real = self.cc.shutil.which
-        self.cc.shutil.which = lambda n: None
+        real = self.cc.find_mpv
+        self.cc.find_mpv = lambda: None
         try:
             self.assertIn("mpv is not installed", self.cc.describe())
         finally:
-            self.cc.shutil.which = real
+            self.cc.find_mpv = real
 
 
 class TestConcurrency(Base):
     """Many tabs report at once. Nothing is lost, and nothing is left running."""
+
+    def test_off_during_a_start_is_not_lost(self):
+        """The old race: the reconciler saved mode=auto over your pause."""
+        import threading
+        m = self.start_mpv()
+        gate = threading.Event()
+        real_play = self.cc.play
+        def slow_play(st, s=None):
+            gate.set()
+            time.sleep(0.4)                # the stream is starting...
+            return real_play(st, s)
+        self.cc.play = slow_play
+        self.cc.report("A", {"turn": True})
+        t = threading.Thread(target=self.cc.reconcile)
+        t.start()
+        gate.wait(2)
+        env = dict(os.environ, CCRADIO_STATE_DIR=self.tmp, CCRADIO_SOCK=self.sock)
+        subprocess.run([EXE, "off"], env=env, capture_output=True, timeout=10)   # ...you press pause
+        t.join(5)
+        self.assertEqual(self.cc.load_state()["mode"], "off", "your off must survive the start")
+        self.cc.play = real_play
 
     def run_many(self, verb_args):
         if not self.mpv:
@@ -778,7 +890,7 @@ class TestPlugin(unittest.TestCase):
         self.assertNotIn("hooks", hooks, "settings hooks would double-drive the player")
 
     def test_the_mod_reports_through_the_one_verb(self):
-        """Every path from the mod into bin/ccradio is a command this file dispatches."""
+        """Every path from the mod into scripts/ccradio is a command this file dispatches."""
         with open(os.path.join(ROOT, "hooks", "register.js")) as fh:
             src = fh.read()
         cc = load_module("m")

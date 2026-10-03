@@ -2,7 +2,7 @@
 //
 // These fire the events the mod handles and check what it asked the host
 // to do. They need no session, sign-in, mpv, or network. The host answers
-// every $.process.run with a canned reply, so bin/ccradio never runs here;
+// every $.process.run with a canned reply, so scripts/ccradio never runs here;
 // its own behaviour is covered by tests/test_ccradio.py.
 //
 // A stub for a mods API call answers with `{ value }`; one for an event such
