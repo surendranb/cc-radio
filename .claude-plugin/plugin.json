@@ -1,7 +1,7 @@
 {
   "name": "ccradio",
   "description": "Music that plays while Claude Code is working, so you know by ear when it's done.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": {
     "name": "Surendran"
   },
@@ -14,6 +14,17 @@
     "audio",
     "somafm",
     "focus",
-    "background"
-  ]
+    "background",
+    "mod"
+  ],
+  "userConfig": {
+    "start_delay": {
+      "type": "number",
+      "title": "Start delay",
+      "description": "Seconds Claude must work before the music starts. A quick answer stays silent.",
+      "default": 6,
+      "min": 0,
+      "max": 60
+    }
+  }
 }

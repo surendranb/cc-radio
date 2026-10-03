@@ -1,21 +1,27 @@
 ---
-description: Control the background radio - play, next, prev, shuffle, pause, volume, search
-argument-hint: "[play|next|prev|shuffle|pause|vol up|vol down|now|stations|search <term>|stop]"
+description: Control the radio in plain words - "put on something ambient", "find a jazz station", "quieter"
+argument-hint: "[what you want, in words]"
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/ccradio:*)
 ---
 
-Run the radio control below and report its output to the user in one short line.
-Do not add commentary, do not explain what radio is, do not offer follow-ups.
+The radio's current state:
 
-!`"${CLAUDE_PLUGIN_ROOT}/bin/ccradio" ${ARGUMENTS:-status}`
+!`"${CLAUDE_PLUGIN_ROOT}/bin/ccradio" status`
 
-If the user asked for something in words rather than a subcommand (for example
-"put on something ambient", "find me a jazz station", "turn it down"), map it to
-the right `ccradio` call and run that instead:
+The user asked: $ARGUMENTS
 
-- a mood or genre -> `ccradio stations` first, then `ccradio play <id>`
-- an unlisted genre or place -> `ccradio search <term>`, then `ccradio play <number>`
+Map what they asked for to one `ccradio` call, run it, and report its output
+in one short line. Do not add commentary, do not explain what the radio is,
+do not offer follow-ups. If they asked for nothing, report the state above.
+
+- a mood or genre -> `ccradio stations` first, then `ccradio play <id>`;
+  if nothing fits, `ccradio genre <tag>` (lofi, jazz, classical, ...)
+- a language -> `ccradio language <name>`
+- a place or an unlisted name -> `ccradio search <term>`, then `ccradio play <number>`
 - "louder" / "quieter" -> `ccradio vol up` / `ccradio vol down`
+- "pause", "quiet", "stop" -> `ccradio pause`; "resume", "back on" -> `ccradio auto`
 
-For routine control the user should prefer `!ccradio next` directly in the
-prompt - it is instant and costs no tokens, where this command costs a full turn.
+Run `"${CLAUDE_PLUGIN_ROOT}/bin/ccradio" <args>` for each call.
+
+For a plain verb the user should prefer `/ccradio <verb>`, which runs at once
+and costs no tokens, even while Claude is working.

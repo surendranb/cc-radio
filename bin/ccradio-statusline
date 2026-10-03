@@ -4,6 +4,9 @@
 #   "statusLine": { "type": "command",
 #                   "command": "/path/to/cc-radio/bin/ccradio-statusline" }
 #
+# Optional: the mod already shows the station in the band above the prompt.
+# Use this when you would rather have it in the statusline.
+#
 # To keep a statusline you already had, put its command in:
 #   ~/.config/ccradio/base-statusline
 # Claude Code runs this without a shell, so an env var in settings.json will
