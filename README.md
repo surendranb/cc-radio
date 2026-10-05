@@ -87,6 +87,7 @@ as working or not depending on its state:
 | A turn is in flight | plays |
 | A subagent is still running, even after the turn that started it ended | plays |
 | Claude is waiting on you: a permission prompt or a question | silence |
+| Another app is using your mic: a call, a huddle, dictation (macOS) | silence |
 | You pressed Escape, or the turn ended on an API error | silence |
 | The tab is idle | silence |
 
@@ -94,6 +95,23 @@ You take priority over the machine. If any tab is waiting on you, the music
 pauses, even while another tab is working. You're about to think and type, and
 that's when you want quiet. When you answer, the music comes back at once, on
 the same station.
+
+## Calls and dictation
+
+When another app starts using your mic (a Zoom call, a Slack huddle,
+dictation), the music pauses. It comes back on the same station once the mic
+has been free for 6 seconds. A muted second in a call doesn't bring it back.
+
+cc-radio reads CoreAudio and never opens the mic itself. It needs no
+permission and no extra software. It works on macOS only.
+
+| Detail | Behavior |
+|---|---|
+| Granola and other all-day recorders | Ignored. Granola is ignored by default. Set `CCRADIO_MIC_IGNORE=granola,otherapp` to change the list. Each entry matches part of the process path. |
+| Turn it off | Set `CCRADIO_MIC=off`. |
+| Music you started by hand | Left alone. Only the automatic music steps aside. |
+| See who holds the mic | Run `ccradio mic`. |
+| macOS before 14 | macOS can't say which app holds the mic, so the ignore list can't apply. |
 
 ## How it works
 

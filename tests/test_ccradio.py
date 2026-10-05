@@ -118,6 +118,7 @@ class Base(unittest.TestCase):
         self.sock = os.path.join(self.tmp, "s.sock")
         self.cc = load_cli(self.tmp, self.sock)
         self.mpv = None
+        self.cc.mic_in_use = lambda: []      # no test may read the real mic
         # No test may ever launch a real player: in-process, the daemon is a stub...
         self.cc.start_daemon = lambda s=None: (s or self.cc.load_state()) if self.cc.alive() \
             else self.cc.die("no fake mpv in this test")
@@ -871,6 +872,75 @@ class TestPlaylistResolution(Base):
     def test_hls_passes_through(self):
         u = "https://example.com/live.m3u8"
         self.assertEqual(self.cc.resolve_pls(u), u)
+
+
+class TestMic(Base):
+    def rec(self, **kw):
+        base = {"turn": True, "waiting": False, "agents": 0, "at": 1000.0}
+        base.update(kw)
+        return base
+
+    def test_a_call_silences_a_working_tab(self):
+        tabs = {"a": self.rec()}
+        self.assertEqual(self.cc.decide(tabs, 1000.0, call=True)[:2], (False, "call"))
+
+    def test_no_call_changes_nothing(self):
+        tabs = {"a": self.rec()}
+        self.assertEqual(self.cc.decide(tabs, 1000.0, call=False)[:2], (True, "working"))
+
+    def test_an_idle_tab_stays_idle_during_a_call(self):
+        tabs = {"a": self.rec(turn=False)}
+        self.assertEqual(self.cc.decide(tabs, 1000.0, call=True)[:2], (False, "idle"))
+
+    def test_ignored_apps_do_not_count(self):
+        mod = load_module("ccradio_mic")
+        mod.mic_holders = lambda: ["/Applications/Granola.app/x/Granola Helper"]
+        self.assertEqual(mod.mic_in_use(), [])
+        mod.mic_holders = lambda: ["/Applications/zoom.us.app/Contents/MacOS/zoom.us"]
+        self.assertEqual(len(mod.mic_in_use()), 1)
+
+    def test_the_off_switch_wins(self):
+        mod = load_module("ccradio_mic_off")
+        mod.mic_holders = lambda: ["zoom.us"]
+        os.environ["CCRADIO_MIC"] = "off"
+        self.addCleanup(os.environ.pop, "CCRADIO_MIC", None)
+        self.assertEqual(mod.mic_in_use(), [])
+
+    def test_the_hold_outlasts_the_call_briefly(self):
+        s = {"mic_busy_at": 1000.0}
+        self.assertTrue(self.cc.on_call(s, 1000.0 + self.cc.MIC_HOLD - 1))
+        self.assertFalse(self.cc.on_call(s, 1000.0 + self.cc.MIC_HOLD + 1))
+
+    def test_a_call_pauses_the_music_and_the_same_station_returns(self):
+        m = self.start_mpv()
+        self.tab("A", turn=1)
+        self.assertEqual(len(m.loads()), 1)
+        station = self.cc.load_state()["station"]
+        self.cc.mic_in_use = lambda: ["zoom.us"]
+        self.cc._reconcile_once()
+        self.assertTrue(m.props["idle-active"], "a call must silence the music")
+        self.cc.mic_in_use = lambda: []
+        s = self.cc.load_state()
+        s["mic_busy_at"] = time.time() - self.cc.MIC_HOLD - 1      # the call ended a while ago
+        self.cc.save_state(s)
+        self.cc._reconcile_once()
+        self.assertFalse(m.props["idle-active"], "music must come back after the call")
+        self.assertEqual(self.cc.load_state()["station"], station)
+
+    def test_no_music_starts_on_a_call(self):
+        m = self.start_mpv()
+        self.cc.mic_in_use = lambda: ["zoom.us"]
+        self.tab("A", turn=1)
+        self.assertEqual(m.loads(), [])
+
+    def test_a_hand_started_radio_is_left_alone(self):
+        m = self.start_mpv()
+        s = self.cc.load_state()
+        s["mode"] = "manual"
+        self.cc.save_state(s)
+        self.cc.mic_in_use = lambda: ["zoom.us"]
+        self.cc._reconcile_once()
+        self.assertFalse(m.sent("stop"))
 
 
 class TestPlugin(unittest.TestCase):

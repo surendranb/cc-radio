@@ -29,7 +29,7 @@ import time
 import urllib.parse
 import urllib.request
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 UA = "cc-radio/%s (+https://github.com/surendranb/cc-radio)" % VERSION
 VOL_STEP = 10
 VOL_MAX = 130
@@ -62,6 +62,99 @@ def _env_float(name, default):
 def start_delay():
     """Seconds of work before the music earns its place. A quick answer stays silent."""
     return max(0.0, _env_float("CCRADIO_START_DELAY", 6.0))
+
+
+# --------------------------------------------------------------------------
+# the mic: a call or dictation takes the speakers, so the music steps aside
+# --------------------------------------------------------------------------
+
+MIC_HOLD = 6.0           # seconds the mic must stay free before the music returns
+# Apps that hold the mic all day without a live call. Matched as a lowercase
+# substring of the process path. Override with CCRADIO_MIC_IGNORE=a,b ("" = none).
+MIC_IGNORE = ("granola",)
+
+
+def mic_ignore():
+    raw = os.environ.get("CCRADIO_MIC_IGNORE")
+    if raw is None:
+        return MIC_IGNORE
+    return tuple(x.strip().lower() for x in raw.split(",") if x.strip())
+
+
+def _ca_get(ca, ctypes, obj, sel, scope="glob", array=False):
+    """Read one CoreAudio property: a uint32, or an array of them. None on failure."""
+    class Addr(ctypes.Structure):
+        _fields_ = [("sel", ctypes.c_uint32), ("scope", ctypes.c_uint32),
+                    ("el", ctypes.c_uint32)]
+    a = Addr(int.from_bytes(sel.encode(), "big"), int.from_bytes(scope.encode(), "big"), 0)
+    n = ctypes.c_uint32(4)
+    if array:
+        if ca.AudioObjectGetPropertyDataSize(obj, ctypes.byref(a), 0, None,
+                                             ctypes.byref(n)) != 0:
+            return None
+        buf = (ctypes.c_uint32 * (n.value // 4))()
+    else:
+        buf = ctypes.c_uint32(0)
+    if ca.AudioObjectGetPropertyData(obj, ctypes.byref(a), 0, None,
+                                     ctypes.byref(n), ctypes.byref(buf)) != 0:
+        return None
+    return list(buf) if array else buf.value
+
+
+def mic_holders():
+    """Paths of the processes capturing audio right now. macOS only.
+
+    Reads CoreAudio through ctypes: no helper binary, no permission prompt,
+    and it never opens the mic itself. macOS 14+ says which process holds the
+    mic. Older macOS only says that somebody does, reported as "unknown".
+    """
+    if sys.platform != "darwin":
+        return []
+    try:
+        import ctypes
+        ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+        procs = _ca_get(ca, ctypes, 1, "prs#", array=True)
+        if procs is None:            # no per-process API: ask the default mic
+            dev = _ca_get(ca, ctypes, 1, "dIn ")
+            return ["unknown"] if dev and _ca_get(ca, ctypes, dev, "gone") else []
+        held = []
+        for obj in procs:
+            if not _ca_get(ca, ctypes, obj, "piri"):
+                continue
+            pid = _ca_get(ca, ctypes, obj, "ppid")
+            out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                                 capture_output=True, text=True, timeout=2)
+            held.append(out.stdout.strip() or "pid %s" % pid)
+        return held
+    except Exception as exc:
+        log("mic check failed: %s: %s", type(exc).__name__, exc)
+        return []
+
+
+def mic_in_use():
+    """The holders of the mic that count: all of them, minus the ignored apps."""
+    if os.environ.get("CCRADIO_MIC") == "off":
+        return []
+    ignore = mic_ignore()
+    return [h for h in mic_holders() if not any(i in h.lower() for i in ignore)]
+
+
+def on_call(s, now=None):
+    """True while another app holds the mic, and for MIC_HOLD seconds after.
+
+    The hold keeps a muted second in a call from bringing the music back. It
+    runs on the clock, not on a count of checks, so it does not matter how
+    often the hooks and the watchdog ask.
+    """
+    now = time.time() if now is None else now
+    held = mic_in_use()
+    if held:
+        if s.get("mic_busy_at") is None or now - s["mic_busy_at"] > 1.0:
+            s["mic_busy_at"] = now
+            save_state(s)
+        return True
+    last = s.get("mic_busy_at")
+    return isinstance(last, (int, float)) and 0 <= now - last < MIC_HOLD
 
 
 FRESH_AFTER = 20.0      # a tab that has not reported for this long is forgotten
@@ -175,6 +268,7 @@ DEFAULT_STATE = {
     "mode": "auto", "pid": None,
     "wanted_since": None,    # when the tabs first wanted music, for the start delay
     "resume": None,          # the station to come back to after a pause for a question
+    "mic_busy_at": None,     # when another app last held the mic, for the call hold
 }
 
 
@@ -419,7 +513,7 @@ def start_watchdog():
         log("watchdog: could not start: %s", exc)
 
 
-WATCHDOG_EVERY = 10.0
+WATCHDOG_EVERY = 3.0       # also how soon a call is noticed
 
 
 def cmd_watchdog(_):
@@ -621,13 +715,14 @@ def tab_is_working(rec, now):
     return False
 
 
-def decide(tabs, now=None):
+def decide(tabs, now=None, call=False):
     """The one rule, from every tab's record.
 
     Returns (wanted, code, why). Play when any tab is working and no tab is
     waiting on you. You win over the machine: a question in one tab pauses
     the music even while another tab works, because you are about to think.
-    Codes: working, waiting, idle, none.
+    The same goes for a call: while another app holds the mic, no music.
+    Codes: working, waiting, call, idle, none.
     """
     now = time.time() if now is None else now
     if not tabs:
@@ -635,6 +730,8 @@ def decide(tabs, now=None):
     if any(rec.get("waiting") for rec in tabs.values()):
         return False, "waiting", "a tab is waiting on you"
     working = [sid for sid, rec in tabs.items() if tab_is_working(rec, now)]
+    if working and call:
+        return False, "call", "another app is using the mic"
     if working:
         return True, "working", "%d tab(s) working" % len(working)
     return False, "idle", "every tab is idle"
@@ -678,7 +775,7 @@ def _reconcile_once():
     with locked():
         s = load_state()
         tabs = read_tabs()
-        wanted, code, why = decide(tabs)
+        wanted, code, why = decide(tabs, call=on_call(s))
         if s["mode"] != "auto":
             log("reconcile: mode is %s, leaving the player alone (%s)", s["mode"], why)
             if not tabs and s["mode"] == "off" and alive():
@@ -691,7 +788,8 @@ def _reconcile_once():
             # music comes straight back once you have answered. Going idle
             # resets it, so the next quick answer stays silent.
             changed = False
-            if code != "waiting" and (s.get("wanted_since") is not None or s.get("resume")):
+            if code not in ("waiting", "call") and (
+                    s.get("wanted_since") is not None or s.get("resume")):
                 s["wanted_since"], s["resume"] = None, None
                 changed = True
             if not tabs and alive():
@@ -699,7 +797,7 @@ def _reconcile_once():
                 stop_daemon(s)
             elif playing:
                 log("reconcile: pause (%s)", why)
-                if code == "waiting":
+                if code in ("waiting", "call"):
                     s["resume"] = s.get("station")   # come back to the same station
                     changed = True
                 unload(s)
@@ -1233,6 +1331,18 @@ def cmd_start(_):
     say("daemon up")
 
 
+def cmd_mic(_):
+    """Who holds the mic right now, and whether it counts (debugging)."""
+    held = mic_holders()
+    if not held:
+        say("the mic is free")
+        return
+    ignore = mic_ignore()
+    for h in held:
+        skipped = any(i in h.lower() for i in ignore)
+        say("%s%s" % (h, "   (ignored)" if skipped else ""))
+
+
 def cmd_working(_):
     """Which tabs are reporting, and what each one says (debugging)."""
     tabs = read_tabs()
@@ -1240,7 +1350,7 @@ def cmd_working(_):
         say("no tab is reporting")
         return
     now = time.time()
-    wanted, _, why = decide(tabs, now)
+    wanted, _, why = decide(tabs, now, call=on_call(load_state(), now))
     for sid, rec in sorted(tabs.items(), key=lambda kv: kv[1].get("at", 0)):
         flags = []
         if rec.get("turn"):
@@ -1313,7 +1423,7 @@ COMMANDS = {
     "stations": cmd_stations, "list": cmd_stations, "search": cmd_search,
     "genre": cmd_genre, "language": cmd_language, "lang": cmd_language,
     "statusline": cmd_statusline, "debug": cmd_debug,
-    "start": cmd_start, "working": cmd_working,
+    "start": cmd_start, "working": cmd_working, "mic": cmd_mic,
     "report": cmd_report, "reconcile": cmd_reconcile, "watchdog": cmd_watchdog,
 }
 
@@ -1338,6 +1448,7 @@ USAGE = """ccradio - internet radio while Claude works
   language [name]    same, by language
   search <term>      find more via Radio Browser
   working            which tabs are reporting, and what the radio decided
+  mic                which app holds the mic (a call pauses the music)
   debug [n|clear]    trace log - why the radio did or didn't do something
   statusline         compact segment for the Claude Code statusline
   report / reconcile / watchdog   what the mod and the player call; you never need to
